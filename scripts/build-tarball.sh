@@ -4,7 +4,7 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OPENCLAW_SKILL="$HOME/.openclaw/workspace/skills/12306-booking"
-DIST="$PROJECT_ROOT/dist/12306-booking.tar.gz"
+DIST="$PROJECT_ROOT/dist/12306-booking-openclaw.tar.gz"
 
 echo "🚄 Rebuilding OpenClaw skill tarball..."
 
