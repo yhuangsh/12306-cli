@@ -28,7 +28,7 @@ const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrom
 // Sessions: ~/.config/12306-booking/sessions/<name>.cookies.json
 //
 // Lookup: --profile <name> > TRAIN_PROFILE env var > "default" symlink
-// Override: --env-file <path> (bypasses profile system entirely)
+// Override: --conf <path> (bypasses profile system entirely)
 
 const CONFIG_DIR = path.join(process.env.HOME || '/tmp', '.config', '12306-booking');
 
@@ -78,10 +78,10 @@ function resolveProfile(args) {
 }
 
 function loadConfig(args) {
-  // --env-file bypasses profile system
-  if (args.envFile) {
-    const profile = { name: 'custom', conf: args.envFile, cookies: path.join(getConfigDir(), 'sessions', 'custom.cookies.json') };
-    return { profile, vars: parseConfFile(args.envFile) };
+  // --conf bypasses profile system
+  if (args.conf) {
+    const profile = { name: 'custom', conf: args.conf, cookies: path.join(getConfigDir(), 'sessions', 'custom.cookies.json') };
+    return { profile, vars: parseConfFile(args.conf) };
   }
   
   const profile = resolveProfile(args);
@@ -663,7 +663,7 @@ async function main() {
       console.error('');
       console.error('Config options:');
       console.error('  --profile <name>    Use named profile (default: "default" symlink)');
-      console.error('  --env-file <path>   Custom config file (bypasses profile system)');
+      console.error('  --conf <path>       Custom config file (bypasses profile system)');
       console.error('');
       console.error('Session options:');
       console.error('  --sms-code <code>   SMS verification code (for login)');

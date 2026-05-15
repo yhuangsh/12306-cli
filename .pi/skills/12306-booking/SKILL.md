@@ -93,14 +93,13 @@ When session expires, the script returns `{"needSmsCode": true}`. Follow this pr
 
 ## Booking Confirmation Protocol
 
-`book` command has a two-phase flow to confirm before placing order:
+**IMPORTANT:** Before running `book`, the agent MUST confirm with the user. Show the train details (code, departure, arrival, price) and ask for explicit approval.
 
-1. Run `book` with all params (no `--yes`)
-2. If output has `"ready": true` → show details to user, ask for confirmation
-3. If user confirms → re-run same command appending `--yes`
-4. If user declines → do nothing (order not placed)
+- `--yes` = agent has confirmed with user (interactive)
+- `--auto` = automated/cron booking (no confirmation needed)
+- Neither = error (order not placed)
 
-Use `--yes` to skip confirmation (for fully automated workflows).
+The agent should confirm *before* calling `book --yes`, not after. The `--yes` flag certifies the agent already has user approval.
 
 ## Notes
 
