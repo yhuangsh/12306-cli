@@ -21,16 +21,17 @@ When this skill is first loaded or the user sends a tarball/zip containing this 
 
 1. **Extract** (if tarball/zip): extract to `~/.openclaw/workspace/skills/12306-booking/`
 2. **Install deps**: run `cd <skill-dir>/scripts && npm install`
-3. **Check for credentials**: read `~/.config/12306-booking/.env`
-   - If it exists and has `TRAIN_USERNAME`, `TRAIN_PASSWORD`, `TRAIN_ID_LAST4` → setup done
-   - If missing → **ask the user** for these 3 values, then write them:
+3. **Check for config**: look for `~/.config/12306-booking/default` or `~/.config/12306-booking/profiles/personal.conf`
+   - If exists with `TRAIN_USERNAME`, `TRAIN_PASSWORD`, `TRAIN_ID_LAST4` → setup done
+   - If missing → **ask the user** for these 3 values, then create profile:
      ```bash
-     mkdir -p ~/.config/12306-booking
-     cat > ~/.config/12306-booking/.env << EOF
+     mkdir -p ~/.config/12306-booking/profiles ~/.config/12306-booking/sessions
+     cat > ~/.config/12306-booking/profiles/personal.conf << 'EOF'
      TRAIN_USERNAME="<username>"
      TRAIN_PASSWORD="<password>"
      TRAIN_ID_LAST4="<last4>"
      EOF
+     ln -sf personal.conf ~/.config/12306-booking/default
      ```
 4. **Verify**: run `node <skill-dir>/scripts/booking.js search --from 北京 --to 上海 --date 2099-01-01` and check output
 5. Report ready to user

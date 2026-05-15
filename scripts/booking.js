@@ -21,32 +21,87 @@ const readline = require('readline');
 
 const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
-// ── Helpers ──
+// ── Config ──
+//
+// Profiles: ~/.config/12306-booking/profiles/<name>.conf
+// Default:  ~/.config/12306-booking/default → symlink to profiles/<name>.conf
+// Sessions: ~/.config/12306-booking/sessions/<name>.cookies.json
+//
+// Lookup: --profile <name> > TRAIN_PROFILE env var > "default" symlink
+// Override: --env-file <path> (bypasses profile system entirely)
+
+const CONFIG_DIR = path.join(process.env.HOME || '/tmp', '.config', '12306-booking');
 
 function getConfigDir() {
-  // OpenClaw: ~/.config/12306-booking/ — persistent state across installs
-  // Pi: same dir (or --env-file overrides)
-  const configDir = path.join(process.env.HOME || '/tmp', '.config', '12306-booking');
-  if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
-  return configDir;
+  if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  return CONFIG_DIR;
 }
 
-function loadEnv(filePath) {
-  // Priority: --env-file > ~/.config/12306-booking/.env > project-root .env
-  const candidates = [
-    filePath,
-    path.join(getConfigDir(), '.env'),
-    path.join(__dirname, '..', '.env')
-  ];
-  const resolved = candidates.find(p => p && fs.existsSync(p));
-  if (!resolved) return {};
-  const content = fs.readFileSync(resolved, 'utf-8');
+function parseConfFile(filePath) {
+  if (!fs.existsSync(filePath)) return {};
+  const content = fs.readFileSync(filePath, 'utf-8');
   const vars = {};
   for (const line of content.split('\n')) {
     const m = line.match(/^\s*([A-Z_0-9]+)\s*=\s*"?([^"]*)"?\s*$/);
     if (m) vars[m[1]] = m[2];
   }
   return vars;
+}
+
+function resolveProfile(args) {
+  // --profile > TRAIN_PROFILE env > "default" symlink
+  const name = args.profile || process.env.TRAIN_PROFILE || 'default';
+  const configDir = getConfigDir();
+  const profilesDir = path.join(configDir, 'profiles');
+  if (!fs.existsSync(profilesDir)) fs.mkdirSync(profilesDir, { recursive: true });
+  
+  let confPath;
+  if (name === 'default') {
+    const defaultLink = path.join(configDir, 'default');
+    if (fs.existsSync(defaultLink)) {
+      confPath = fs.realpathSync(defaultLink);
+    } else {
+      // Fallback: try profiles/default.conf, then legacy .env
+      confPath = path.join(profilesDir, 'default.conf');
+      if (!fs.existsSync(confPath)) {
+        const legacy = path.join(configDir, '.env');
+        if (fs.existsSync(legacy)) return { name: 'default', conf: legacy, cookies: path.join(configDir, '.session-cookies.json') };
+        return { name: 'default', conf: null, cookies: path.join(configDir, '.session-cookies.json') };
+      }
+    }
+  } else {
+    confPath = path.join(profilesDir, `${name}.conf`);
+    if (!fs.existsSync(confPath)) return { name, conf: null, cookies: path.join(configDir, 'sessions', `${name}.cookies.json`) };
+  }
+  
+  return { name, conf: confPath, cookies: path.join(configDir, 'sessions', `${name}.cookies.json`) };
+}
+
+function loadConfig(args) {
+  // --env-file bypasses profile system
+  if (args.envFile) {
+    const profile = { name: 'custom', conf: args.envFile, cookies: path.join(getConfigDir(), 'sessions', 'custom.cookies.json') };
+    return { profile, vars: parseConfFile(args.envFile) };
+  }
+  
+  const profile = resolveProfile(args);
+  const fileVars = profile.conf ? parseConfFile(profile.conf) : {};
+  
+  // Env vars override file vars (env vars = lowest priority in file, but override file)
+  const vars = {
+    ...fileVars,
+    TRAIN_USERNAME: process.env.TRAIN_USERNAME || fileVars.TRAIN_USERNAME,
+    TRAIN_PASSWORD: process.env.TRAIN_PASSWORD || fileVars.TRAIN_PASSWORD,
+    TRAIN_ID_LAST4: process.env.TRAIN_ID_LAST4 || fileVars.TRAIN_ID_LAST4,
+    // Non-sensitive defaults from config
+    TRAIN_FROM: process.env.TRAIN_FROM || fileVars.TRAIN_FROM || '',
+    TRAIN_TO: process.env.TRAIN_TO || fileVars.TRAIN_TO || '',
+    TRAIN_PASSENGER: process.env.TRAIN_PASSENGER || fileVars.TRAIN_PASSENGER || '',
+    TRAIN_SEAT_TYPE: process.env.TRAIN_SEAT_TYPE || fileVars.TRAIN_SEAT_TYPE || '',
+    TRAIN_SEAT_POS: process.env.TRAIN_SEAT_POS || fileVars.TRAIN_SEAT_POS || '',
+  };
+  
+  return { profile, vars };
 }
 
 function parseArgs(argv) {
@@ -105,8 +160,8 @@ async function createBrowser(cookies, headless = true) {
   return { browser, context };
 }
 
-async function ensureSession(context, env, args) {
-  const cookiesPath = path.join(getConfigDir(), '.session-cookies.json');
+async function ensureSession(context, { profile, vars }, args) {
+  const cookiesPath = profile.cookies;
   let cookies = fs.existsSync(cookiesPath) ? JSON.parse(fs.readFileSync(cookiesPath, 'utf-8')) : null;
 
   if (cookies) await context.addCookies(cookies);
@@ -126,9 +181,9 @@ async function ensureSession(context, env, args) {
 
   if (needLogin) {
     const missing = [];
-    if (!env.TRAIN_USERNAME) missing.push('TRAIN_USERNAME');
-    if (!env.TRAIN_PASSWORD) missing.push('TRAIN_PASSWORD');
-    if (!env.TRAIN_ID_LAST4) missing.push('TRAIN_ID_LAST4');
+    if (!vars.TRAIN_USERNAME) missing.push('TRAIN_USERNAME');
+    if (!vars.TRAIN_PASSWORD) missing.push('TRAIN_PASSWORD');
+    if (!vars.TRAIN_ID_LAST4) missing.push('TRAIN_ID_LAST4');
     if (missing.length > 0) return { error: `Missing in .env: ${missing.join(', ')}` };
 
     if (!args.smsCode) {
@@ -141,15 +196,15 @@ async function ensureSession(context, env, args) {
     await page.goto('https://kyfw.12306.cn/otn/resources/login.html', { waitUntil: 'networkidle' });
     await page.waitForTimeout(2000);
 
-    await page.fill('#J-userName', env.TRAIN_USERNAME);
-    await page.fill('#J-password', env.TRAIN_PASSWORD);
+    await page.fill('#J-userName', vars.TRAIN_USERNAME);
+    await page.fill('#J-password', vars.TRAIN_PASSWORD);
     await page.click('#J-login');
     await page.waitForTimeout(3000);
 
     await page.click('#verification li:nth-child(2)');
     await page.waitForTimeout(1000);
 
-    await page.fill('#id_card', env.TRAIN_ID_LAST4);
+    await page.fill('#id_card', vars.TRAIN_ID_LAST4);
     await page.waitForTimeout(500);
     await page.click('#verification_code');
     await page.waitForTimeout(3000);
@@ -188,9 +243,9 @@ async function clickSeat(page, seatId) {
 
 // ── Search ──
 
-async function cmdSearch(args, env) {
-  const from = args.from || await ask('🚄 出发城市');
-  const to = args.to || await ask('🚄 到达城市');
+async function cmdSearch(args, config) {
+  const from = args.from || config.vars.TRAIN_FROM || await ask('🚄 出发城市');
+  const to = args.to || config.vars.TRAIN_TO || await ask('🚄 到达城市');
   const date = args.date || await ask('📅 日期 (YYYY-MM-DD)');
   if (!from || !to || !date) return output({ ok: false, error: 'Missing: from, to, date' });
 
@@ -245,15 +300,15 @@ async function cmdSearch(args, env) {
 
 // ── Book ──
 
-async function cmdBook(args, env) {
-  const from = args.from || await ask('🚄 出发城市');
-  const to = args.to || await ask('🚄 到达城市');
+async function cmdBook(args, config) {
+  const from = args.from || config.vars.TRAIN_FROM || await ask('🚄 出发城市');
+  const to = args.to || config.vars.TRAIN_TO || await ask('🚄 到达城市');
   const date = args.date || await ask('📅 日期 (YYYY-MM-DD)');
   if (!from || !to || !date) return output({ ok: false, error: 'Missing: from, to, date' });
 
   const { browser, context } = await createBrowser(null, args.headless !== 'false');
   try {
-    const sess = await ensureSession(context, env, args);
+    const sess = await ensureSession(context, config, args);
     if (sess.error) return output({ ok: false, error: sess.error });
     if (sess.needSmsCode) return output({ ok: false, needSmsCode: true, message: sess.message });
 
@@ -318,8 +373,9 @@ async function cmdBook(args, env) {
     });
 
     let passengerIdx = 0;
-    if (args.passenger && passengers.length > 0) {
-      passengerIdx = passengers.findIndex(p => p.includes(args.passenger));
+    if (args.passenger || config.vars.TRAIN_PASSENGER) {
+      const pName = args.passenger || config.vars.TRAIN_PASSENGER;
+      passengerIdx = passengers.findIndex(p => p.includes(pName));
       if (passengerIdx === -1) passengerIdx = await askChoice('Select passenger', passengers);
     } else if (passengers.length > 1) {
       passengerIdx = await askChoice('Select passenger', passengers);
@@ -342,8 +398,9 @@ async function cmdBook(args, env) {
     });
 
     let seatTypeIdx = 0;
-    if (args.seatType && seatOptions.length > 0) {
-      seatTypeIdx = seatOptions.findIndex(s => s.text.includes(args.seatType));
+    if ((args.seatType || config.vars.TRAIN_SEAT_TYPE) && seatOptions.length > 0) {
+      const st = args.seatType || config.vars.TRAIN_SEAT_TYPE;
+      seatTypeIdx = seatOptions.findIndex(s => s.text.includes(st));
       if (seatTypeIdx === -1) seatTypeIdx = await askChoice('Select seat type', seatOptions.map(s => s.text));
     } else if (seatOptions.length > 1) {
       seatTypeIdx = await askChoice('Select seat type', seatOptions.map(s => s.text));
@@ -383,7 +440,7 @@ async function cmdBook(args, env) {
 
     if (seatDialog.available && seatDialog.letters.length > 0) {
       const descriptions = { A: '靠窗', B: '中间', C: '过道', D: '过道', F: '靠窗' };
-      let seatPos = args.seatPos ? args.seatPos.toUpperCase() : null;
+      let seatPos = args.seatPos ? args.seatPos.toUpperCase() : config.vars.TRAIN_SEAT_POS ? config.vars.TRAIN_SEAT_POS.toUpperCase() : null;
       if (seatPos && !seatDialog.letters.includes(seatPos)) {
         console.error(`⚠️  Position ${seatPos} not available.`);
         seatPos = null;
@@ -431,10 +488,10 @@ async function cmdBook(args, env) {
 
 // ── Orders (check unpaid) ──
 
-async function cmdOrders(args, env) {
+async function cmdOrders(args, config) {
   const { browser, context } = await createBrowser(null, args.headless !== 'false');
   try {
-    const sess = await ensureSession(context, env, args);
+    const sess = await ensureSession(context, config, args);
     if (sess.error) return output({ ok: false, error: sess.error });
     if (sess.needSmsCode) return output({ ok: false, needSmsCode: true, message: sess.message });
 
@@ -496,10 +553,10 @@ async function cmdOrders(args, env) {
 
 // ── Cancel ──
 
-async function cmdCancel(args, env) {
+async function cmdCancel(args, config) {
   const { browser, context } = await createBrowser(null, args.headless !== 'false');
   try {
-    const sess = await ensureSession(context, env, args);
+    const sess = await ensureSession(context, config, args);
     if (sess.error) return output({ ok: false, error: sess.error });
     if (sess.needSmsCode) return output({ ok: false, needSmsCode: true, message: sess.message });
 
@@ -575,15 +632,15 @@ async function cmdCancel(args, env) {
 
 async function main() {
   const args = parseArgs(process.argv);
-  const env = loadEnv(args.envFile);
+  const config = loadConfig(args);
 
   const command = process.argv[2];
 
   switch (command) {
-    case 'search': return (await cmdSearch(args, env));
-    case 'book': return (await cmdBook(args, env));
-    case 'orders': return (await cmdOrders(args, env));
-    case 'cancel': return (await cmdCancel(args, env));
+    case 'search': return (await cmdSearch(args, config));
+    case 'book': return (await cmdBook(args, config));
+    case 'orders': return (await cmdOrders(args, config));
+    case 'cancel': return (await cmdCancel(args, config));
     default:
       console.error(`Usage: node booking.js <search|book|orders|cancel> [options]`);
       console.error('');
@@ -594,7 +651,8 @@ async function main() {
       console.error('  cancel   Cancel unpaid order');
       console.error('');
       console.error('Options:');
-      console.error('  --env-file <path>   Custom .env path');
+      console.error('  --profile <name>    Config profile (default: "default" symlink)');
+      console.error('  --env-file <path>   Custom config file (bypasses profile system)');
       console.error('  --headless false    Show browser (default: true)');
       console.error('  --sms-code XXXXXX   SMS verification code (for login)');
       console.error('  --yes               Confirm order (agent has user approval)');
