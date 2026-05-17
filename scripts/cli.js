@@ -964,7 +964,7 @@ program
     '  12306-cli login --sms-code 123456  # submits code, saves session\n\n' +
     'Maintenance window: booking unavailable 1:00–6:00 AM CST daily.'
   )
-  .version('1.0.0');
+  .version('1.1.0');
 
 // ── Station lookup ──
 
