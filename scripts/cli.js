@@ -692,7 +692,7 @@ async function cmdBook(args, config) {
       const seats = [];
       dialog.querySelectorAll('a[id]').forEach(a => {
         if (a.id.match(/^[0-9]+[A-F]$/) && a.offsetWidth > 0) {
-          seats.push({ id: a.id, letter: a.id.replace(/^[0-]+/, '') });
+          seats.push({ id: a.id, letter: a.id.replace(/^\d+/, '') });
         }
       });
       const letters = [...new Set(seats.map(s => s.letter))];
