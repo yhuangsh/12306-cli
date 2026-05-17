@@ -90,6 +90,19 @@ Clear saved login session.
 12306-cli logout
 ```
 
+### `12306-cli cities`
+
+Show supported city/station names. Use the Chinese name with `--from` and `--to`.
+
+```bash
+# List popular cities with their stations
+12306-cli cities
+
+# Search by name, pinyin, or station code
+12306-cli cities --filter 北京
+12306-cli cities -f shanghai
+```
+
 ### `12306-cli search`
 
 Search trains. Returns JSON with train codes, times, durations, and seat availability.

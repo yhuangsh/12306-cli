@@ -964,6 +964,96 @@ program
   )
   .version('1.0.0');
 
+// ── Station lookup ──
+
+const STATION_URL = 'https://kyfw.12306.cn/otn/resources/js/framework/station_name.js';
+
+async function fetchStations() {
+  const https = require('https');
+  return new Promise((resolve, reject) => {
+    https.get(STATION_URL, r => {
+      let d = '';
+      r.on('data', c => d += c);
+      r.on('end', () => {
+        const m = d.match(/'(.+)'/);
+        if (!m) return reject(new Error('Failed to parse station data'));
+        const stations = [];
+        for (const entry of m[1].split('@')) {
+          if (!entry) continue;
+          const p = entry.split('|');
+          if (p.length >= 6 && p[1]) {
+            stations.push({ name: p[1], code: p[2], pinyin: p[3], short: p[4] });
+          }
+        }
+        resolve(stations);
+      });
+    }).on('error', reject);
+  });
+}
+
+// Popular cities for display (station name → city name for grouping)
+const POPULAR = [
+  '北京','上海','广州','深圳','成都','重庆','杭州','南京','武汉','西安',
+  '长沙','天津','苏州','郑州','哈尔滨','昆明','大连','青岛','厦门','三亚',
+  '济南','福州','合肥','南昌','沈阳','长春','贵阳','兰州','太原','石家庄',
+  '南宁','乌鲁木齐','呼和浩特','拉萨','银川','西宁',
+];
+
+// ─── Cities ─────────────────────────────────────────────
+
+program
+  .command('cities')
+  .description('Show supported city/station names for search and booking')
+  .option('-f, --filter <keyword>', 'Filter by city name, pinyin, or station code')
+  .addHelpText('after',
+    '\nExamples:\n' +
+    '  $ 12306-cli cities\n' +
+    '  $ 12306-cli cities --filter 北京\n' +
+    '  $ 12306-cli cities -f shanghai\n\n' +
+    'Use the Chinese city/station name with --from and --to:\n' +
+    '  $ 12306-cli search --from 北京 --to 上海 --date 2026-06-15'
+  )
+  .action(async (opts) => {
+    try {
+      const stations = await fetchStations();
+      const keyword = (opts.filter || '').toLowerCase();
+
+      if (keyword) {
+        // Search by name, pinyin, or code
+        const matches = stations.filter(s =>
+          s.name.includes(keyword) ||
+          s.pinyin.startsWith(keyword) ||
+          s.short.startsWith(keyword) ||
+          s.code.toLowerCase() === keyword
+        );
+        const result = matches.map(s => ({ name: s.name, code: s.code, pinyin: s.pinyin }));
+        output({ ok: true, count: result.length, stations: result });
+        return;
+      }
+
+      // No filter — show popular cities with their stations
+      const cityStations = {};
+      for (const s of stations) {
+        // Group by city: match station name to popular city list
+        const city = POPULAR.find(c => s.name.startsWith(c) || s.name === c);
+        if (!city) continue;
+        if (!cityStations[city]) cityStations[city] = [];
+        cityStations[city].push(s);
+      }
+
+      const result = POPULAR
+        .filter(c => cityStations[c])
+        .map(city => ({
+          city,
+          stations: cityStations[city].map(s => `${s.name} (${s.code})`)
+        }));
+
+      output({ ok: true, count: result.length, cities: result });
+    } catch (e) {
+      output({ ok: false, error: e.message });
+    }
+  });
+
 // ─── Search ─────────────────────────────────────────────
 
 program
