@@ -1,6 +1,6 @@
 ---
 name: 12306-booking
-description: Search and book train tickets on China's 12306 railway system. Use when the user wants to search trains, book tickets, check orders, or cancel orders on 12306. Supports seat type and position selection (window/aisle), multi-train search with filtering, and order management.
+description: Search and book train tickets on China's 12306 railway system. Use when the user wants to search trains, book tickets, check orders, or cancel orders on 12306. Supports seat type and position selection (window/aisle), multi-train search with filtering, multi-passenger booking, and order management.
 metadata:
   openclaw:
     emoji: "🚄"
@@ -10,7 +10,7 @@ metadata:
       - id: npm-deps
         kind: npm
         label: Install Playwright
-        hint: cd SKILL_DIR/scripts && npm install playwright
+        hint: cd SKILL_DIR/scripts && npm install
 ---
 
 # 12306 Train Ticket Booking
@@ -52,16 +52,39 @@ All output JSON to stdout. Progress on stderr.
 node $SCRIPT search --from 北京 --to 上海 --date 2026-05-22
 ```
 
-Returns `{"ok": true, "trains": [{"code", "departure", "arrival", "duration", "bookable", ...}]}`
+Returns `{"ok": true, "trains": [{"code", "departure", "arrival", "duration", "fromStation", "toStation", "bookable", "seats": {"二等座": "有", "一等座": "15", ...}}, ...]}`
+
+**Search filters:**
+```bash
+# Only high-speed trains (G prefix)
+node $SCRIPT search --from 北京 --to 上海 --date 2026-05-22 --train-filter G
+
+# Multiple prefixes
+node $SCRIPT search --from 北京 --to 上海 --date 2026-05-22 --train-filter G,D
+```
 
 ### Book a Ticket
 
 **IMPORTANT:** Before running `book`, the agent MUST confirm with the user. Show the train details (code, departure, arrival, price) and ask for explicit approval. Do not place orders without user confirmation.
 
+#### Single Passenger
+
 ```bash
 node $SCRIPT book --from 北京 --to 上海 --date 2026-05-22 --train G35 --passenger 张三 --seat-type 二等座 --seat-pos F --yes
 ```
 
+#### Multi-Passenger
+
+```bash
+node $SCRIPT book --from 北京 --to 上海 --date 2026-05-22 --train G35 \
+  --passenger "张三,李四" --seat-type 二等座 --seat-pos "F,D" --yes
+```
+
+- `--passenger` accepts comma-separated names for multi-passenger booking
+- `--seat-pos` accepts comma-separated positions (one per passenger, in order)
+- Seat row is passenger index: passenger 1 → row 1, passenger 2 → row 2
+
+**Flags:**
 - `--yes` = agent has confirmed with user (required for interactive booking)
 - `--auto` = automated/recurring booking, skip confirmation (for cron jobs)
 
@@ -103,8 +126,9 @@ The agent should confirm *before* calling `book --yes`, not after. The `--yes` f
 
 ## Notes
 
-- Maintenance window: 1:00–6:00 AM daily
+- Maintenance window: 1:00–6:00 AM CST daily (script auto-checks and blocks booking)
 - One unpaid order at a time
 - Row auto-assigned by 12306 (not selectable via web)
 - Max ~3 cancels/day before lockout
 - `--headless false` to show browser
+- Search results include seat availability (有/无/exact count) per seat type
