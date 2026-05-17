@@ -1,16 +1,36 @@
 {
-  "name": "12306-booking",
+  "name": "12306-cli",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "description": "12306 China Railway CLI — search, book, and manage train tickets from the terminal",
+  "bin": {
+    "12306-cli": "./scripts/cli.js"
   },
-  "keywords": [],
+  "files": [
+    "scripts/cli.js"
+  ],
+  "scripts": {
+    "postinstall": "npx playwright install chromium",
+    "test": "node scripts/test-phases.js"
+  },
+  "keywords": [
+    "12306",
+    "china-railway",
+    "train",
+    "booking",
+    "cli",
+    "travel"
+  ],
   "author": "",
-  "license": "ISC",
-  "type": "commonjs",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yhuangsh/12306-cli.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
+    "commander": "^14.0.3",
     "playwright": "^1.60.0"
   }
 }

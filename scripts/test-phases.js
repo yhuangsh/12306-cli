@@ -11,7 +11,7 @@
 
 const { execSync, execFileSync } = require('child_process');
 const path = require('path');
-const SCRIPT = path.join(__dirname, 'booking.js');
+const SCRIPT = path.join(__dirname, 'cli.js');
 
 let passed = 0, failed = 0, skipped = 0;
 
@@ -179,12 +179,12 @@ test('book without --yes/--auto returns error (session or confirmation)', () => 
 });
 
 test('help output shows multi-passenger syntax', () => {
-  const { stderr } = runCombined(`node ${SCRIPT} --help`);
-  if (!stderr.includes('comma-separated')) throw new Error('Missing comma-separated hint');
-  if (!stderr.includes('--passenger <names>')) throw new Error('Missing --passenger docs');
-  if (!stderr.includes('--seat-pos <letters>')) throw new Error('Missing --seat-pos docs');
-  if (!stderr.includes('--train-filter')) throw new Error('Missing --train-filter docs');
-  if (!stderr.includes('Multi-passenger')) throw new Error('Missing multi-passenger example');
+  const { stdout, stderr } = runCombined(`node ${SCRIPT} book --help`);
+  const out = stdout + stderr;
+  if (!out.includes('comma-separated')) throw new Error('Missing comma-separated hint');
+  if (!out.includes('--passenger')) throw new Error('Missing --passenger docs');
+  if (!out.includes('--seat-pos')) throw new Error('Missing --seat-pos docs');
+  if (!out.includes('Multi-passenger')) throw new Error('Missing multi-passenger example');
 });
 
 // ═══════════════════════════════════════════════

@@ -1,37 +1,30 @@
+#!/usr/bin/env node
 /**
- * 12306 Booking Tool — Multi-command CLI
+ * 12306 CLI — China Railway ticket tool
  *
- * Commands:
- *   search   — List trains with times, seat availability
- *   book     — Place an order (login → search → book → seat selection)
- *   orders   — Check unpaid orders with seat details
- *   cancel   — Cancel an unpaid order
- *
- * Multi-passenger: --passenger "张三,李四" --seat-pos "F,F"
- * Sensitive info: .env or profile.conf (TRAIN_USERNAME, TRAIN_PASSWORD, TRAIN_ID_LAST4)
- * Params: CLI args (--from, --to, --date, --train, --passenger, --seat-type, --seat-pos)
- * Missing params: prompted interactively
- *
- * Output: JSON to stdout
+ * Output: JSON to stdout, progress/diagnostics to stderr
  */
 
+const { Command } = require('commander');
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 
-const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+// Use Playwright's bundled Chromium (auto-installed by postinstall).
+// Override with CHROME_PATH env var if you need a custom browser.
+const CHROME_PATH = process.env.CHROME_PATH || null;
 
 // ── Config ──
 //
-// Profiles: ~/.config/12306-booking/profiles/<name>.conf
-// Default:  ~/.config/12306-booking/default → symlink to profiles/<name>.conf
-// Sessions: ~/.config/12306-booking/sessions/<name>.cookies.json
+// Profiles: ~/.config/12306-cli/profiles/<name>.conf
+// Default:  ~/.config/12306-cli/default → symlink to profiles/<name>.conf
+// Sessions: ~/.config/12306-cli/sessions/<name>.cookies.json
 //
 // Lookup: --profile <name> > TRAIN_PROFILE env var > "default" symlink
 // Override: --conf <path> (bypasses profile system entirely)
 
-const CONFIG_DIR = path.join(process.env.HOME || '/tmp', '.config', '12306-booking');
+const CONFIG_DIR = path.join(process.env.HOME || '/tmp', '.config', '12306-cli');
 
 function getConfigDir() {
   if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true });
@@ -105,6 +98,8 @@ function loadConfig(args) {
   return { profile, vars };
 }
 
+const IS_TTY = process.stdin.isTTY === true;
+
 function parseArgs(argv) {
   const args = {};
   for (let i = 2; i < argv.length; i++) {
@@ -118,6 +113,7 @@ function parseArgs(argv) {
 }
 
 function ask(question, defaultVal) {
+  if (!IS_TTY) return Promise.resolve(defaultVal || '');
   const hint = defaultVal ? ` (${defaultVal})` : '';
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise(resolve => rl.question(`${question}${hint}: `, answer => {
@@ -127,6 +123,10 @@ function ask(question, defaultVal) {
 }
 
 function askChoice(question, options) {
+  if (!IS_TTY) {
+    console.error(`Interactive prompt blocked (no TTY): ${question}`);
+    return Promise.resolve(0);
+  }
   console.log('\n' + question);
   options.forEach((opt, i) => console.log(`  ${i + 1}. ${opt}`));
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -159,11 +159,12 @@ function checkMaintenanceWindow() {
 // ── Browser ──
 
 async function createBrowser(cookies, headless = true) {
-  const browser = await chromium.launch({
-    executablePath: CHROME_PATH,
+  const launchOpts = {
     headless,
     args: ['--disable-blink-features=AutomationControlled']
-  });
+  };
+  if (CHROME_PATH) launchOpts.executablePath = CHROME_PATH;
+  const browser = await chromium.launch(launchOpts);
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
     viewport: { width: 1440, height: 900 }
@@ -826,83 +827,333 @@ async function cmdCancel(args, config) {
   }
 }
 
-// ── Main ──
+// ── Commander Program ──
 
-async function main() {
-  const args = parseArgs(process.argv);
-  const config = loadConfig(args);
-
-  const command = process.argv[2];
-
-  switch (command) {
-    case 'search': return (await cmdSearch(args, config));
-    case 'book': return (await cmdBook(args, config));
-    case 'orders': return (await cmdOrders(args, config));
-    case 'cancel': return (await cmdCancel(args, config));
-    default:
-      console.error(`Usage: node booking.js <command> [options]`);
-      console.error('');
-      console.error('Commands:');
-      console.error('  search   List trains (--from, --to, --date)');
-      console.error('  book     Place order (--from, --to, --date, --train, --passenger, --seat-type, --seat-pos)');
-      console.error('  orders   Check unpaid orders');
-      console.error('  cancel   Cancel unpaid order');
-      console.error('');
-      console.error('Booking options:');
-      console.error('  --from <city>          Departure city');
-      console.error('  --to <city>            Arrival city');
-      console.error('  --date <YYYY-MM-DD>    Travel date');
-      console.error('  --train <code>         Train code (e.g. G35)');
-      console.error('  --passenger <names>    Passenger name(s), comma-separated for multi-passenger');
-      console.error('                         e.g. --passenger "张三,李四"');
-      console.error('  --seat-type <type>     Seat type: 二等座, 一等座, 商务座 (substring match)');
-      console.error('  --seat-pos <letters>   Seat position(s), comma-separated for multi-passenger');
-      console.error('                         A=window-left, B=middle, C=aisle, D=aisle, F=window-right');
-      console.error('                         e.g. --seat-pos "F,F" (both passengers window)');
-      console.error('  --yes                  Confirm order (agent has user approval)');
-      console.error('  --auto                 Automated booking (cron/recurring, no confirmation)');
-      console.error('');
-      console.error('Search filters:');
-      console.error('  --train-filter <prefix>  Filter by train code prefix, comma-separated');
-      console.error('                           e.g. --train-filter G (high-speed only)');
-      console.error('                           e.g. --train-filter G,D (high-speed + EMU)');
-      console.error('');
-      console.error('Config options:');
-      console.error('  --profile <name>       Use named profile (default: "default" symlink)');
-      console.error('  --conf <path>          Custom config file (bypasses profile system)');
-      console.error('');
-      console.error('Session options:');
-      console.error('  --sms-code <code>      SMS verification code (for login)');
-      console.error('  --headless false       Show browser (default: true)');
-      console.error('');
-      console.error('Config profiles (~/.config/12306-booking/):');
-      console.error('  profiles/<name>.conf   Config file per profile');
-      console.error('  default                Symlink to active profile');
-      console.error('  sessions/<name>.cookies.json  Saved login session');
-      console.error('');
-      console.error('Config file format (profiles/<name>.conf):');
-      console.error('  TRAIN_USERNAME="..."   # 12306 username (required)');
-      console.error('  TRAIN_PASSWORD="..."   # 12306 password (required)');
-      console.error('  TRAIN_ID_LAST4="..."   # ID card last 4 digits (required)');
-      console.error('  TRAIN_FROM="..."       # Default departure city');
-      console.error('  TRAIN_TO="..."         # Default arrival city');
-      console.error('  TRAIN_PASSENGER="..."  # Default passenger name(s)');
-      console.error('  TRAIN_SEAT_TYPE="..."  # Default seat type');
-      console.error('  TRAIN_SEAT_POS="..."   # Default seat position(s) (A/B/C/D/F)');
-      console.error('');
-      console.error('Lookup order (highest priority first):');
-      console.error('  CLI arg > env var > profile .conf > interactive prompt');
-      console.error('');
-      console.error('Multi-passenger booking:');
-      console.error('  node booking.js book --from 北京 --to 上海 --date 2026-05-22 \\');
-      console.error('    --train G35 --passenger "张三,李四" \\');
-      console.error('    --seat-type 二等座 --seat-pos "F,F" --yes');
-      console.error('');
-      console.error('Environment variables (same names as config file):');
-      console.error('  TRAIN_PROFILE          Profile name (instead of --profile)');
-      console.error('  TRAIN_USERNAME          etc.');
-      return output({ ok: false, error: `Unknown command: ${command}` });
-  }
+function buildArgsFromOpts(opts) {
+  const args = {};
+  if (opts.from) args.from = opts.from;
+  if (opts.to) args.to = opts.to;
+  if (opts.date) args.date = opts.date;
+  if (opts.train) args.train = opts.train;
+  if (opts.passenger) args.passenger = opts.passenger;
+  if (opts.seatType) args.seatType = opts.seatType;
+  if (opts.seatPos) args.seatPos = opts.seatPos;
+  if (opts.trainFilter) args.trainFilter = opts.trainFilter;
+  if (opts.profile) args.profile = opts.profile;
+  if (opts.conf) args.conf = opts.conf;
+  if (opts.smsCode) args.smsCode = opts.smsCode;
+  if (opts.headless !== undefined) args.headless = opts.headless;
+  if (opts.yes) args.yes = 'true';
+  if (opts.auto) args.auto = 'true';
+  return args;
 }
 
-main().catch(e => output({ ok: false, error: e.message }));
+const program = new Command();
+
+program
+  .name('12306-cli')
+  .description(
+    '中国铁路12306 CLI — 搜索车次、在线订票、查询订单\n' +
+    'China Railway 12306 CLI — search, book, and manage train tickets\n\n' +
+    'First-time setup:\n' +
+    '  12306-cli config set username <your_username>\n' +
+    '  12306-cli config set password <your_password>\n' +
+    '  12306-cli config set id_last4 <last_4_digits_of_id>\n\n' +
+    'Quick start:\n' +
+    '  12306-cli search --from 北京 --to 上海 --date 2026-06-15\n' +
+    '  12306-cli book --from 北京 --to 上海 --date 2026-06-15 \\\n' +
+    '    --train G35 --passenger 张三 --seat-type 二等座 --seat-pos F --yes\n\n' +
+    'SMS login (when session expires):\n' +
+    '  1. Run any command — if output has needSmsCode:true, session expired\n' +
+    '  2. Wait for SMS code on your phone\n' +
+    '  3. Re-run same command with --sms-code <code>\n' +
+    '  4. Session saved, results returned\n\n' +
+    'Maintenance window: booking unavailable 1:00–6:00 AM CST daily.'
+  )
+  .version('1.0.0');
+
+// ─── Search ─────────────────────────────────────────────
+
+program
+  .command('search')
+  .description('Search trains with seat availability (no login required)')
+  .requiredOption('--from <city>', 'Departure city (Chinese name, e.g. 北京)')
+  .requiredOption('--to <city>', 'Arrival city (Chinese name, e.g. 上海)')
+  .requiredOption('--date <YYYY-MM-DD>', 'Travel date')
+  .option('--train-filter <prefix>', 'Filter by train code prefix, comma-separated (e.g. G, G,D)')
+  .addOption(new (require('commander').Option)('--headless <bool>', 'Show browser').default('true').hideHelp())
+  .addHelpText('after',
+    '\nExamples:\n' +
+    '  $ 12306-cli search --from 北京 --to 上海 --date 2026-06-15\n' +
+    '  $ 12306-cli search --from 北京 --to 上海 --date 2026-06-15 --train-filter G\n\n' +
+    'Output JSON:\n' +
+    '  { ok: true, date, from, to, count, source,\n' +
+    '    trains: [{ code, fromStation, toStation, departure, arrival,\n' +
+    '               duration, bookable, seats: { "二等座": "有", ... } }] }\n\n' +
+    'Seat values: "有" = available, "无" = sold out, number = remaining count.'
+  )
+  .action(async (opts) => {
+    const args = buildArgsFromOpts(opts);
+    const config = loadConfig(args);
+    await cmdSearch(args, config);
+  });
+
+// ─── Book ───────────────────────────────────────────────
+
+program
+  .command('book')
+  .description(
+    'Book a train ticket (requires login)\n\n' +
+    '  Params resolved: CLI flags > env vars > config profile > interactive prompt.\n' +
+    '  Requires --yes (confirmed) or --auto (automated) to place order.\n\n' +
+    '  Multi-passenger: --passenger "张三,李四" --seat-pos "F,D"\n' +
+    '  Seat types: 二等座, 一等座, 特等座, 商务座\n' +
+    '  Seat positions: A=window-left, B=middle, C=aisle-left, D=aisle-right, F=window-right'
+  )
+  .option('--from <city>', 'Departure city')
+  .option('--to <city>', 'Arrival city')
+  .option('--date <YYYY-MM-DD>', 'Travel date')
+  .option('--train <code>', 'Train code (e.g. G35)')
+  .option('--passenger <names>', 'Passenger name(s), comma-separated for multi-passenger')
+  .option('--seat-type <type>', 'Seat type: 二等座, 一等座, 商务座 (substring match)')
+  .option('--seat-pos <letters>', 'Seat position(s), comma-separated (A/B/C/D/F)')
+  .option('-y, --yes', 'Confirm order (user has approved)')
+  .option('--auto', 'Automated booking (cron/recurring, no confirmation)')
+  .option('--sms-code <code>', 'SMS verification code (for login)')
+  .addOption(new (require('commander').Option)('--headless <bool>', 'Show browser').default('true').hideHelp())
+  .addHelpText('after',
+    '\nExamples:\n' +
+    '  # Single passenger:\n' +
+    '  $ 12306-cli book --from 北京 --to 上海 --date 2026-06-15 \\\n' +
+    '      --train G35 --passenger 张三 --seat-type 二等座 --seat-pos F --yes\n\n' +
+    '  # Multi-passenger:\n' +
+    '  $ 12306-cli book --from 北京 --to 上海 --date 2026-06-15 \\\n' +
+    '      --train G35 --passenger "张三,李四" --seat-type 二等座 --seat-pos "F,D" --yes\n\n' +
+    '  # With config defaults for passenger/route (no need to repeat):\n' +
+    '  $ 12306-cli book --date 2026-06-15 --train G35 --yes\n\n' +
+    '  # SMS login (when session expires):\n' +
+    '  $ 12306-cli book ... --sms-code 123456\n\n' +
+    'Output JSON (success):\n' +
+    '  { ok: true, train, passengers: [...], seatType, seatPos,\n' +
+    '    date, from, to, message }\n\n' +
+    'Output JSON (session expired):\n' +
+    '  { ok: false, needSmsCode: true, message: "..." }\n\n' +
+    'Output JSON (error):\n' +
+    '  { ok: false, error: "description" }'
+  )
+  .action(async (opts) => {
+    const args = buildArgsFromOpts(opts);
+    const config = loadConfig(args);
+    await cmdBook(args, config);
+  });
+
+// ─── Orders ─────────────────────────────────────────────
+
+program
+  .command('orders')
+  .description('Check unpaid orders with seat details (requires login)')
+  .option('--sms-code <code>', 'SMS verification code (for login)')
+  .addOption(new (require('commander').Option)('--headless <bool>', 'Show browser').default('true').hideHelp())
+  .addHelpText('after',
+    '\nExample:\n' +
+    '  $ 12306-cli orders\n\n' +
+    'Output JSON:\n' +
+    '  { ok: true, hasUnpaid: true/false, orders: [...], message }\n\n' +
+    '  When session expired: { ok: false, needSmsCode: true }'
+  )
+  .action(async (opts) => {
+    const args = buildArgsFromOpts(opts);
+    const config = loadConfig(args);
+    await cmdOrders(args, config);
+  });
+
+// ─── Cancel ─────────────────────────────────────────────
+
+program
+  .command('cancel')
+  .description('Cancel unpaid order (requires login)\n\n' +
+    '  Note: cancellation may require the 12306 mobile app.\n' +
+    '  Max ~3 cancels/day before lockout.')
+  .option('--sms-code <code>', 'SMS verification code (for login)')
+  .addOption(new (require('commander').Option)('--headless <bool>', 'Show browser').default('true').hideHelp())
+  .addHelpText('after',
+    '\nExample:\n' +
+    '  $ 12306-cli cancel\n\n' +
+    'Output JSON:\n' +
+    '  { ok: true/false, message }\n\n' +
+    '  When session expired: { ok: false, needSmsCode: true }'
+  )
+  .action(async (opts) => {
+    const args = buildArgsFromOpts(opts);
+    const config = loadConfig(args);
+    await cmdCancel(args, config);
+  });
+
+// ─── Config helpers ─────────────────────────────────────
+
+const CONFIG_KEYS = [
+  { key: 'TRAIN_USERNAME',  desc: '12306 username (required)', secret: true },
+  { key: 'TRAIN_PASSWORD',  desc: '12306 password (required)', secret: true },
+  { key: 'TRAIN_ID_LAST4',  desc: 'ID card last 4 digits (required)' },
+  { key: 'TRAIN_PASSENGER', desc: 'Default passenger name(s), comma-separated for multi-passenger' },
+  { key: 'TRAIN_FROM',      desc: 'Default departure city' },
+  { key: 'TRAIN_TO',        desc: 'Default arrival city' },
+  { key: 'TRAIN_SEAT_TYPE', desc: 'Default seat type (二等座, 一等座, 商务座)' },
+  { key: 'TRAIN_SEAT_POS',  desc: 'Default seat position(s) (A/B/C/D/F)' },
+];
+
+function resolveConfPath(profileName) {
+  const profilesDir = path.join(CONFIG_DIR, 'profiles');
+  if (!fs.existsSync(profilesDir)) fs.mkdirSync(profilesDir, { recursive: true });
+  const confPath = path.join(profilesDir, `${profileName}.conf`);
+  return confPath;
+}
+
+function configSet(key, value, profileName = 'personal') {
+  const normalizedKey = key.toUpperCase().replace(/-/g, '_');
+  let fullKey;
+  if (!normalizedKey.startsWith('TRAIN_')) {
+    const match = CONFIG_KEYS.find(k => k.key === `TRAIN_${normalizedKey}`);
+    if (match) fullKey = match.key;
+    else return { ok: false, error: `Unknown key: ${key}. Run "12306-cli config list" to see valid keys.` };
+  } else {
+    fullKey = normalizedKey;
+  }
+
+  const valid = CONFIG_KEYS.find(k => k.key === fullKey);
+  if (!valid) return { ok: false, error: `Unknown key: ${fullKey}. Run "12306-cli config list" to see valid keys.` };
+
+  const confPath = resolveConfPath(profileName);
+
+  // Read existing file content, preserving comments and blank lines
+  let lines = [];
+  if (fs.existsSync(confPath)) {
+    lines = fs.readFileSync(confPath, 'utf-8').split('\n');
+  }
+
+  // Find and update the target line, or append if not found
+  let found = false;
+  lines = lines.map(line => {
+    const m = line.match(/^\s*(TRAIN_[A-Z_0-9]+)="([^"]*)"/);
+    if (m && m[1] === fullKey) { found = true; return `${fullKey}="${value}"`; }
+    return line;
+  });
+  if (!found) {
+    lines.push(`${fullKey}="${value}"`);
+  }
+  // Remove trailing blank lines, add one final newline
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
+  fs.writeFileSync(confPath, lines.join('\n') + '\n');
+
+  // Update default symlink
+  const defaultLink = path.join(CONFIG_DIR, 'default');
+  if (!fs.existsSync(defaultLink)) {
+    fs.symlinkSync(path.join('profiles', `${profileName}.conf`), defaultLink);
+  }
+
+  return { ok: true, key: fullKey, value, file: confPath };
+}
+
+function configGet(key, profileName = 'personal') {
+  const normalizedKey = key.toUpperCase().replace(/-/g, '_');
+  const fullKey = normalizedKey.startsWith('TRAIN_') ? normalizedKey : `TRAIN_${normalizedKey}`;
+  const valid = CONFIG_KEYS.find(k => k.key === fullKey);
+  if (!valid) return { ok: false, error: `Unknown key: ${key}.` };
+
+  const confPath = resolveConfPath(profileName);
+  const vars = parseConfFile(confPath);
+  const val = vars[fullKey] || null;
+  return { ok: true, key: fullKey, value: val || '(not set)', file: confPath };
+}
+
+function configList(profileName = 'personal') {
+  const confPath = resolveConfPath(profileName);
+  const vars = parseConfFile(confPath);
+  const result = {};
+  for (const k of CONFIG_KEYS) {
+    result[k.key] = vars[k.key] ? (k.secret ? '***' : vars[k.key]) : '(not set)';
+  }
+  return {
+    ok: true,
+    profile: profileName,
+    file: confPath,
+    vars: result,
+  };
+}
+
+// ─── Config Command ─────────────────────────────────────
+
+program
+  .command('config <action> [key] [value]')
+  .description(
+    'Manage configuration\n\n' +
+    '  Actions:\n' +
+    '    list    Show all config values\n' +
+    '    get     Get a value\n' +
+    '    set     Set a value\n' +
+    '    path    Print config file path\n\n' +
+    '  Config dir: ~/.config/12306-cli/\n' +
+    '  Lookup order (highest priority first):\n' +
+    '    CLI arg > env var > profile .conf > interactive prompt'
+  )
+  .option('--profile <name>', 'Profile name (default: "personal")', 'personal')
+  .addHelpText('after',
+    '\nExamples:\n' +
+    '  $ 12306-cli config set username myname\n' +
+    '  $ 12306-cli config set password mypass\n' +
+    '  $ 12306-cli config set id_last4 1234\n' +
+    '  $ 12306-cli config set passenger "张三"\n' +
+    '  $ 12306-cli config set from 北京\n' +
+    '  $ 12306-cli config set seat_type 二等座\n' +
+    '  $ 12306-cli config list\n' +
+    '  $ 12306-cli config get passenger\n' +
+    '  $ 12306-cli config path\n\n' +
+    'Keys (shorthand or full TRAIN_* name):\n' +
+    '  username    TRAIN_USERNAME    12306 username (required)\n' +
+    '  password    TRAIN_PASSWORD    12306 password (required)\n' +
+    '  id_last4    TRAIN_ID_LAST4    ID card last 4 digits (required)\n' +
+    '  passenger   TRAIN_PASSENGER   Default passenger name(s)\n' +
+    '  from        TRAIN_FROM        Default departure city\n' +
+    '  to          TRAIN_TO          Default arrival city\n' +
+    '  seat_type   TRAIN_SEAT_TYPE   Default seat type\n' +
+    '  seat_pos    TRAIN_SEAT_POS    Default seat position(s)'
+  )
+  .action((action, key, value, opts) => {
+    const profileName = opts.profile || 'personal';
+
+    switch (action) {
+      case 'set': {
+        if (!key || value === undefined) {
+          console.error('Usage: 12306-cli config set <key> <value>');
+          process.exit(1);
+        }
+        const result = configSet(key, value, profileName);
+        output(result);
+        break;
+      }
+      case 'get': {
+        if (!key) {
+          console.error('Usage: 12306-cli config get <key>');
+          process.exit(1);
+        }
+        const result = configGet(key, profileName);
+        output(result);
+        break;
+      }
+      case 'list': {
+        const result = configList(profileName);
+        output(result);
+        break;
+      }
+      case 'path': {
+        const confPath = resolveConfPath(profileName);
+        output({ ok: true, path: confPath });
+        break;
+      }
+      default:
+        console.error(`Unknown action: ${action}. Use: list, get, set, path`);
+        process.exit(1);
+    }
+  });
+
+program.parse();
