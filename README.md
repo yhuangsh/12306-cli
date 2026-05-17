@@ -60,6 +60,36 @@ Optionally set defaults for frequent routes:
 
 ## Commands
 
+### `12306-cli login`
+
+Login to 12306 via SMS verification. This is a two-phase flow:
+
+```bash
+# Phase 1: sends SMS code to your phone
+12306-cli login
+
+# Phase 2: submit the code (after receiving SMS)
+12306-cli login --sms-code 123456
+```
+
+Session is saved to `~/.config/12306-cli/`. Run once, then use `book`/`orders`/`cancel` freely.
+
+### `12306-cli status`
+
+Check if your current session is valid.
+
+```bash
+12306-cli status
+```
+
+### `12306-cli logout`
+
+Clear saved login session.
+
+```bash
+12306-cli logout
+```
+
 ### `12306-cli search`
 
 Search trains. Returns JSON with train codes, times, durations, and seat availability.
@@ -128,12 +158,19 @@ Keys: `username`, `password`, `id_last4`, `passenger`, `from`, `to`, `seat_type`
 
 ## SMS Login
 
-When your session expires, the CLI returns `{"ok": false, "needSmsCode": true}`. Follow this protocol:
+Login is handled by the `login` command:
 
-1. Run command normally
-2. If output has `"needSmsCode": true` → wait for SMS code on your phone
-3. Re-run same command appending `--sms-code <code>`
-4. Session is saved, results returned
+```bash
+# Phase 1: send SMS
+12306-cli login
+# → { needSmsCode: true, message: "SMS sent..." }
+
+# Phase 2: submit code
+12306-cli login --sms-code 123456
+# → { ok: true, message: "Login successful. Session saved." }
+```
+
+Session persists across commands. When it expires, just re-run `12306-cli login`.
 
 ## How It Works
 

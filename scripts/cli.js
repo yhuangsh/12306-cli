@@ -156,59 +156,100 @@ function checkMaintenanceWindow() {
   return { inMaintenance: false };
 }
 
-// ── Browser ──
+// ── Session Manager ──
+// Handles browser lifecycle, session persistence, login/logout.
+// Session state: ~/.config/12306-cli/sessions/<profile>.state.json
 
-async function createBrowser(cookies, headless = true) {
-  const launchOpts = {
-    headless,
-    args: ['--disable-blink-features=AutomationControlled']
-  };
-  if (CHROME_PATH) launchOpts.executablePath = CHROME_PATH;
-  const browser = await chromium.launch(launchOpts);
-  const context = await browser.newContext({
-    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
-    viewport: { width: 1440, height: 900 }
-  });
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => false });
-  });
-  if (cookies) await context.addCookies(cookies);
-  return { browser, context };
-}
-
-async function ensureSession(context, { profile, vars }, args) {
-  const cookiesPath = profile.cookies;
-  let cookies = fs.existsSync(cookiesPath) ? JSON.parse(fs.readFileSync(cookiesPath, 'utf-8')) : null;
-
-  if (cookies) await context.addCookies(cookies);
-
-  // Check
-  let needLogin = true;
-  if (cookies) {
-    const p = await context.newPage();
-    await p.goto('https://kyfw.12306.cn/otn/resources/login.html', { waitUntil: 'networkidle' });
-    const ok = await p.evaluate(async () => {
-      const r = await fetch('/otn/login/conf', { method: 'POST', credentials: 'include' });
-      return (await r.json()).data?.is_login;
-    });
-    await p.close();
-    if (ok === 'Y') needLogin = false;
+class SessionManager {
+  constructor(config, headless = true) {
+    this.config = config;
+    this.headless = headless;
+    this.browser = null;
+    this.context = null;
   }
 
-  if (needLogin) {
-    const missing = [];
-    if (!vars.TRAIN_USERNAME) missing.push('TRAIN_USERNAME');
-    if (!vars.TRAIN_PASSWORD) missing.push('TRAIN_PASSWORD');
-    if (!vars.TRAIN_ID_LAST4) missing.push('TRAIN_ID_LAST4');
-    if (missing.length > 0) return { error: `Missing in .env: ${missing.join(', ')}` };
+  _statePath() {
+    const cookiesPath = this.config.profile.cookies;
+    return cookiesPath.replace('.cookies.json', '.state.json');
+  }
 
-    if (!args.smsCode) {
-      // Session expired — don't send SMS yet, just tell agent to re-run with --sms-code
-      return { needSmsCode: true, message: 'Session expired. Re-run with --sms-code XXXXXX to login.' };
+  _ensureDir() {
+    const dir = path.dirname(this._statePath());
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  }
+
+  async _launch(storageStatePath) {
+    if (this.browser) return;
+    const launchOpts = {
+      headless: this.headless,
+      args: ['--disable-blink-features=AutomationControlled']
+    };
+    if (CHROME_PATH) launchOpts.executablePath = CHROME_PATH;
+    this.browser = await chromium.launch(launchOpts);
+    const contextOpts = {
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+      viewport: { width: 1440, height: 900 }
+    };
+    if (storageStatePath && fs.existsSync(storageStatePath)) {
+      contextOpts.storageState = storageStatePath;
+    }
+    this.context = await this.browser.newContext(contextOpts);
+    await this.context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    });
+  }
+
+  /**
+   * Restore session from disk and check validity.
+   * @returns {{ ok: true } | { ok: false, needLogin: true }}
+   */
+  async load() {
+    const statePath = this._statePath();
+    await this._launch(statePath);
+
+    if (!fs.existsSync(statePath)) {
+      return { ok: false, needLogin: true };
     }
 
-    // Login with SMS code (sends SMS then immediately submits code)
-    const page = await context.newPage();
+    try {
+      const page = await this.context.newPage();
+      await page.goto('https://kyfw.12306.cn/otn/resources/login.html', { waitUntil: 'networkidle' });
+      const isLogin = await page.evaluate(async () => {
+        const r = await fetch('/otn/login/conf', { method: 'POST', credentials: 'include' });
+        return (await r.json()).data?.is_login;
+      });
+      await page.close();
+
+      if (isLogin === 'Y') {
+        return { ok: true };
+      }
+
+      // Session expired — clean up and force re-login
+      this._deleteState();
+      return { ok: false, needLogin: true };
+    } catch {
+      this._deleteState();
+      return { ok: false, needLogin: true };
+    }
+  }
+
+  /**
+   * Interactive login. Sends SMS, then submits code.
+   * @param {string|null} smsCode - If null, returns needSmsCode (two-phase for agents).
+   * @returns {Promise<{ok:boolean, message?:string, needSmsCode?:boolean, error?:string}>}
+   */
+  async login(smsCode) {
+    const { vars } = this.config;
+    const missing = [];
+    if (!vars.TRAIN_USERNAME) missing.push('username');
+    if (!vars.TRAIN_PASSWORD) missing.push('password');
+    if (!vars.TRAIN_ID_LAST4) missing.push('id_last4');
+    if (missing.length > 0) {
+      return { ok: false, error: `Missing config: ${missing.join(', ')}. Run: 12306-cli config set <key> <value>` };
+    }
+
+    await this._launch();
+    const page = await this.context.newPage();
     await page.goto('https://kyfw.12306.cn/otn/resources/login.html', { waitUntil: 'networkidle' });
     await page.waitForTimeout(2000);
 
@@ -225,17 +266,70 @@ async function ensureSession(context, { profile, vars }, args) {
     await page.click('#verification_code');
     await page.waitForTimeout(3000);
 
-    await page.fill('#code', args.smsCode);
+    if (!smsCode) {
+      await page.close();
+      return { ok: false, needSmsCode: true, message: 'SMS sent. Re-run: 12306-cli login --sms-code <code>' };
+    }
+
+    await page.fill('#code', smsCode);
     await page.click('#sureClick');
     await page.waitForTimeout(5000);
 
-    cookies = await context.cookies();
-    fs.writeFileSync(cookiesPath, JSON.stringify(cookies, null, 2));
-    console.error('💾 Session saved.');
+    const isLogin = await page.evaluate(async () => {
+      const r = await fetch('/otn/login/conf', { method: 'POST', credentials: 'include' });
+      return (await r.json()).data?.is_login;
+    });
     await page.close();
+
+    if (isLogin === 'Y') {
+      await this.save();
+      return { ok: true, message: 'Login successful. Session saved.' };
+    }
+
+    return { ok: false, error: 'Login failed. Check credentials and SMS code.' };
   }
 
-  return { ok: true };
+  async save() {
+    this._ensureDir();
+    const state = await this.context.storageState();
+    fs.writeFileSync(this._statePath(), JSON.stringify(state, null, 2));
+  }
+
+  async logout() {
+    this._deleteState();
+    return { ok: true, message: 'Logged out. Session cleared.' };
+  }
+
+  _deleteState() {
+    const p = this._statePath();
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+    // Also remove legacy cookies file if present
+    const legacyCookies = this.config.profile.cookies;
+    if (fs.existsSync(legacyCookies)) fs.unlinkSync(legacyCookies);
+  }
+
+  async cleanup() {
+    if (this.browser) await this.browser.close();
+  }
+}
+
+// ── Standalone browser launch (for search, no session needed) ──
+
+async function launchBrowser(headless = true) {
+  const launchOpts = {
+    headless,
+    args: ['--disable-blink-features=AutomationControlled']
+  };
+  if (CHROME_PATH) launchOpts.executablePath = CHROME_PATH;
+  const browser = await chromium.launch(launchOpts);
+  const context = await browser.newContext({
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+    viewport: { width: 1440, height: 900 }
+  });
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+  });
+  return { browser, context };
 }
 
 // ── Seat click via dispatchEvent ──
@@ -271,7 +365,7 @@ async function cmdSearch(args, config) {
     return output({ ok: false, error: `Invalid date format: ${date}. Use YYYY-MM-DD.` });
   }
 
-  const { browser, context } = await createBrowser(null, args.headless !== 'false');
+  const { browser, context } = await launchBrowser(args.headless !== 'false');
   try {
     const page = await context.newPage();
 
@@ -380,7 +474,7 @@ async function cmdSearch(args, config) {
       source: 'api'
     });
   } finally {
-    await browser.close();
+    await session.cleanup();
   }
 }
 
@@ -410,12 +504,12 @@ async function cmdBook(args, config) {
   const seatPosInput = args.seatPos || config.vars.TRAIN_SEAT_POS || '';
   const seatPositions = seatPosInput ? seatPosInput.split(',').map(p => p.trim().toUpperCase()).filter(Boolean) : [];
 
-  const { browser, context } = await createBrowser(null, args.headless !== 'false');
+  const session = new SessionManager(config, args.headless !== 'false');
   try {
-    const sess = await ensureSession(context, config, args);
-    if (sess.error) return output({ ok: false, error: sess.error });
-    if (sess.needSmsCode) return output({ ok: false, needSmsCode: true, message: sess.message });
+    const sess = await session.load();
+    if (sess.needLogin) return output({ ok: false, needLogin: true, message: 'Not logged in. Run: 12306-cli login' });
 
+    const { context } = session;
     // Search
     const page = await context.newPage();
     await page.goto(
@@ -681,19 +775,19 @@ async function cmdBook(args, config) {
       pageSnippet: pageText.substring(0, 300)
     });
   } finally {
-    await browser.close();
+    await session.cleanup();
   }
 }
 
 // ── Orders (check unpaid) ──
 
 async function cmdOrders(args, config) {
-  const { browser, context } = await createBrowser(null, args.headless !== 'false');
+  const session = new SessionManager(config, args.headless !== 'false');
   try {
-    const sess = await ensureSession(context, config, args);
-    if (sess.error) return output({ ok: false, error: sess.error });
-    if (sess.needSmsCode) return output({ ok: false, needSmsCode: true, message: sess.message });
+    const sess = await session.load();
+    if (sess.needLogin) return output({ ok: false, needLogin: true, message: 'Not logged in. Run: 12306-cli login' });
 
+    const { context } = session;
     const page = await context.newPage();
 
     // Navigate to order page via the index
@@ -746,19 +840,19 @@ async function cmdOrders(args, config) {
       rawBody: bodyText.substring(0, 2000)
     });
   } finally {
-    await browser.close();
+    await session.cleanup();
   }
 }
 
 // ── Cancel ──
 
 async function cmdCancel(args, config) {
-  const { browser, context } = await createBrowser(null, args.headless !== 'false');
+  const session = new SessionManager(config, args.headless !== 'false');
   try {
-    const sess = await ensureSession(context, config, args);
-    if (sess.error) return output({ ok: false, error: sess.error });
-    if (sess.needSmsCode) return output({ ok: false, needSmsCode: true, message: sess.message });
+    const sess = await session.load();
+    if (sess.needLogin) return output({ ok: false, needLogin: true, message: 'Not logged in. Run: 12306-cli login' });
 
+    const { context } = session;
     const page = await context.newPage();
     await page.goto('https://kyfw.12306.cn/otn/view/train_order.html', { waitUntil: 'networkidle' });
     await page.waitForTimeout(3000);
@@ -823,7 +917,7 @@ async function cmdCancel(args, config) {
 
     return output({ ok: success, message: success ? 'Order cancelled' : 'Cancel may have failed', bodySnippet: bodyText.substring(0, 300) });
   } finally {
-    await browser.close();
+    await session.cleanup();
   }
 }
 
@@ -841,7 +935,7 @@ function buildArgsFromOpts(opts) {
   if (opts.trainFilter) args.trainFilter = opts.trainFilter;
   if (opts.profile) args.profile = opts.profile;
   if (opts.conf) args.conf = opts.conf;
-  if (opts.smsCode) args.smsCode = opts.smsCode;
+  if (opts.smsCode) args.smsCode = opts.smsCode;  // login command only
   if (opts.headless !== undefined) args.headless = opts.headless;
   if (opts.yes) args.yes = 'true';
   if (opts.auto) args.auto = 'true';
@@ -864,10 +958,8 @@ program
     '  12306-cli book --from 北京 --to 上海 --date 2026-06-15 \\\n' +
     '    --train G35 --passenger 张三 --seat-type 二等座 --seat-pos F --yes\n\n' +
     'SMS login (when session expires):\n' +
-    '  1. Run any command — if output has needSmsCode:true, session expired\n' +
-    '  2. Wait for SMS code on your phone\n' +
-    '  3. Re-run same command with --sms-code <code>\n' +
-    '  4. Session saved, results returned\n\n' +
+    '  12306-cli login              # sends SMS code\n' +
+    '  12306-cli login --sms-code 123456  # submits code, saves session\n\n' +
     'Maintenance window: booking unavailable 1:00–6:00 AM CST daily.'
   )
   .version('1.0.0');
@@ -919,7 +1011,6 @@ program
   .option('--seat-pos <letters>', 'Seat position(s), comma-separated (A/B/C/D/F)')
   .option('-y, --yes', 'Confirm order (user has approved)')
   .option('--auto', 'Automated booking (cron/recurring, no confirmation)')
-  .option('--sms-code <code>', 'SMS verification code (for login)')
   .addOption(new (require('commander').Option)('--headless <bool>', 'Show browser').default('true').hideHelp())
   .addHelpText('after',
     '\nExamples:\n' +
@@ -931,13 +1022,11 @@ program
     '      --train G35 --passenger "张三,李四" --seat-type 二等座 --seat-pos "F,D" --yes\n\n' +
     '  # With config defaults for passenger/route (no need to repeat):\n' +
     '  $ 12306-cli book --date 2026-06-15 --train G35 --yes\n\n' +
-    '  # SMS login (when session expires):\n' +
-    '  $ 12306-cli book ... --sms-code 123456\n\n' +
     'Output JSON (success):\n' +
     '  { ok: true, train, passengers: [...], seatType, seatPos,\n' +
     '    date, from, to, message }\n\n' +
-    'Output JSON (session expired):\n' +
-    '  { ok: false, needSmsCode: true, message: "..." }\n\n' +
+    'Output JSON (not logged in):\n' +
+    '  { ok: false, needLogin: true, message: "Not logged in. Run: 12306-cli login" }\n\n' +
     'Output JSON (error):\n' +
     '  { ok: false, error: "description" }'
   )
@@ -947,19 +1036,99 @@ program
     await cmdBook(args, config);
   });
 
+// ─── Login ─────────────────────────────────────────────
+
+program
+  .command('login')
+  .description(
+    'Login to 12306 via SMS verification\n\n' +
+    '  Two-phase flow:\n' +
+    '    1. Run "12306-cli login" — sends SMS code to your phone\n' +
+    '    2. Run "12306-cli login --sms-code <code>" — submits code, saves session\n\n' +
+    '  Requires config: username, password, id_last4 (run 12306-cli config set)'
+  )
+  .option('--sms-code <code>', 'SMS verification code (omit to send code)')
+  .addOption(new (require('commander').Option)('--headless <bool>', 'Show browser').default('true').hideHelp())
+  .addHelpText('after',
+    '\nExamples:\n' +
+    '  # Phase 1: send SMS code\n' +
+    '  $ 12306-cli login\n\n' +
+    '  # Phase 2: submit code (after receiving SMS)\n' +
+    '  $ 12306-cli login --sms-code 123456\n\n' +
+    'Output JSON (SMS sent):\n' +
+    '  { ok: false, needSmsCode: true, message: "SMS sent..." }\n\n' +
+    'Output JSON (success):\n' +
+    '  { ok: true, message: "Login successful. Session saved." }'
+  )
+  .action(async (opts) => {
+    const args = buildArgsFromOpts(opts);
+    const config = loadConfig(args);
+    const session = new SessionManager(config, args.headless !== 'false');
+    try {
+      const result = await session.login(opts.smsCode || null);
+      if (result.ok) {
+        console.error('✅ ' + result.message);
+      } else if (result.needSmsCode) {
+        console.error('📱 ' + result.message);
+      } else {
+        console.error('❌ ' + result.error);
+      }
+      output(result);
+    } finally {
+      await session.cleanup();
+    }
+  });
+
+// ─── Logout ─────────────────────────────────────────────
+
+program
+  .command('logout')
+  .description('Clear saved login session')
+  .action(async (opts) => {
+    const args = buildArgsFromOpts(opts);
+    const config = loadConfig(args);
+    const session = new SessionManager(config);
+    const result = await session.logout();
+    console.error('✅ ' + result.message);
+    output(result);
+  });
+
+// ─── Status ─────────────────────────────────────────────
+
+program
+  .command('status')
+  .description('Check if current session is valid')
+  .addOption(new (require('commander').Option)('--headless <bool>', 'Show browser').default('true').hideHelp())
+  .action(async (opts) => {
+    const args = buildArgsFromOpts(opts);
+    const config = loadConfig(args);
+    const session = new SessionManager(config, args.headless !== 'false');
+    try {
+      const result = await session.load();
+      if (result.ok) {
+        console.error('✅ Logged in');
+        output({ ok: true, loggedIn: true });
+      } else {
+        console.error('❌ Not logged in');
+        output({ ok: true, loggedIn: false, message: 'Run: 12306-cli login' });
+      }
+    } finally {
+      await session.cleanup();
+    }
+  });
+
 // ─── Orders ─────────────────────────────────────────────
 
 program
   .command('orders')
   .description('Check unpaid orders with seat details (requires login)')
-  .option('--sms-code <code>', 'SMS verification code (for login)')
   .addOption(new (require('commander').Option)('--headless <bool>', 'Show browser').default('true').hideHelp())
   .addHelpText('after',
     '\nExample:\n' +
     '  $ 12306-cli orders\n\n' +
     'Output JSON:\n' +
     '  { ok: true, hasUnpaid: true/false, orders: [...], message }\n\n' +
-    '  When session expired: { ok: false, needSmsCode: true }'
+    '  When not logged in: { ok: false, needLogin: true }'
   )
   .action(async (opts) => {
     const args = buildArgsFromOpts(opts);
@@ -974,14 +1143,13 @@ program
   .description('Cancel unpaid order (requires login)\n\n' +
     '  Note: cancellation may require the 12306 mobile app.\n' +
     '  Max ~3 cancels/day before lockout.')
-  .option('--sms-code <code>', 'SMS verification code (for login)')
   .addOption(new (require('commander').Option)('--headless <bool>', 'Show browser').default('true').hideHelp())
   .addHelpText('after',
     '\nExample:\n' +
     '  $ 12306-cli cancel\n\n' +
     'Output JSON:\n' +
     '  { ok: true/false, message }\n\n' +
-    '  When session expired: { ok: false, needSmsCode: true }'
+    '  When not logged in: { ok: false, needLogin: true }'
   )
   .action(async (opts) => {
     const args = buildArgsFromOpts(opts);
