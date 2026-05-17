@@ -1092,7 +1092,9 @@ program
     '  Requires --yes (confirmed) or --auto (automated) to place order.\n\n' +
     '  Multi-passenger: --passenger "张三,李四" --seat-pos "F,D"\n' +
     '  Seat types: 二等座, 一等座, 特等座, 商务座\n' +
-    '  Seat positions: A=window-left, B=middle, C=aisle-left, D=aisle-right, F=window-right'
+    '  Seat positions: A=window-left, B=middle, C=aisle-left, D=aisle-right, F=window-right\n' +
+    '  Seat selection only available on high-speed (G) trains. For D/Z/T/K trains,\n' +
+    '  seat position is auto-assigned by 12306.',
   )
   .option('--from <city>', 'Departure city')
   .option('--to <city>', 'Arrival city')
@@ -1100,7 +1102,7 @@ program
   .option('--train <code>', 'Train code (e.g. G35)')
   .option('--passenger <names>', 'Passenger name(s), comma-separated for multi-passenger')
   .option('--seat-type <type>', 'Seat type: 二等座, 一等座, 商务座 (substring match)')
-  .option('--seat-pos <letters>', 'Seat position(s), comma-separated (A/B/C/D/F)')
+  .option('--seat-pos <letters>', 'Seat position(s), comma-separated (A/B/C/D/F). G-trains only.')
   .option('-y, --yes', 'Confirm order (user has approved)')
   .option('--auto', 'Automated booking (cron/recurring, no confirmation)')
   .addOption(new (require('commander').Option)('--headless <bool>', 'Show browser').default('true').hideHelp())
@@ -1376,7 +1378,7 @@ program
     '  from        TRAIN_FROM        Default departure city\n' +
     '  to          TRAIN_TO          Default arrival city\n' +
     '  seat_type   TRAIN_SEAT_TYPE   Default seat type\n' +
-    '  seat_pos    TRAIN_SEAT_POS    Default seat position(s)'
+    '  seat_pos    TRAIN_SEAT_POS    Default seat position(s) (A/B/C/D/F, G-trains only)'
   )
   .action((action, key, value, opts) => {
     const profileName = opts.profile || 'personal';

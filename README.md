@@ -137,6 +137,8 @@ Book a ticket. Resolves params from **CLI flags > env vars > config profile > in
 
 **Seat positions:** A=window-left, B=middle, C=aisle-left, D=aisle-right, F=window-right
 
+Seat selection only available on high-speed (G) trains. For D/Z/T/K trains, seat position is auto-assigned by 12306.
+
 The `--yes` flag is required to confirm the order. Without it, the command returns an error.
 
 ### `12306-cli orders`
