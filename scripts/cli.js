@@ -263,14 +263,16 @@ class SessionManager {
 
     await page.fill('#id_card', vars.TRAIN_ID_LAST4);
     await page.waitForTimeout(500);
-    await page.click('#verification_code');
-    await page.waitForTimeout(3000);
 
     if (!smsCode) {
+      // Phase 1: send SMS, return needSmsCode
+      await page.click('#verification_code');
+      await page.waitForTimeout(3000);
       await page.close();
       return { ok: false, needSmsCode: true, message: 'SMS sent. Re-run: 12306-cli login --sms-code <code>' };
     }
 
+    // Phase 2: just fill the code and submit (don't re-send SMS)
     await page.fill('#code', smsCode);
     await page.click('#sureClick');
     await page.waitForTimeout(5000);
