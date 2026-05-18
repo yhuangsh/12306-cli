@@ -750,30 +750,47 @@ async function cmdOrders(args, config) {
   try {
     const type = args.type || 'unpaid';
 
-    // Navigate to order page
-    await page.goto('https://kyfw.12306.cn/otn/view/train_order.html', { waitUntil: 'networkidle' });
-    await page.waitForTimeout(3000);
-
-    // Directly call the appropriate API endpoint
-    let endpoint;
-    if (type === 'upcoming') {
-      endpoint = '/otn/queryOrder/queryMyOrder';
-    } else {
-      endpoint = '/otn/queryOrder/queryMyOrderNoComplete';
+    // Navigate to order page to establish origin
+    await page.goto('https://kyfw.12306.cn/otn/view/train_order.html', { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await page.waitForTimeout(2000);
+    
+    // Check if we got redirected to login (session expired)
+    if (page.url().includes('login')) {
+      return output({ ok: false, needLogin: true, message: 'Session expired. Run: 12306-cli session start' });
     }
 
-    const apiResult = await page.evaluate(async (url) => {
+    // Directly call the appropriate API endpoint
+    let endpoint, body;
+    if (type === 'upcoming') {
+      // queryMyOrder returns OrderDTODataList
+      // 90-day window covers all upcoming paid orders
+      const today = new Date();
+      const start = new Date(today); start.setDate(start.getDate() - 90);
+      const fmt = d => d.toISOString().split('T')[0];
+      endpoint = '/otn/queryOrder/queryMyOrder';
+      body = `pageIndex=0&pageSize=100&queryType=1&query_where=G&sequeue_train_name=&queryStartDate=${fmt(start)}&queryEndDate=${fmt(today)}`;
+    } else {
+      endpoint = '/otn/queryOrder/queryMyOrderNoComplete';
+      body = '_json_att=';
+    }
+
+    const apiResult = await page.evaluate(async ({ url, body }) => {
       const r = await fetch(url, {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        body
       });
       const text = await r.text();
       try { return JSON.parse(text); } catch { return { raw: text }; }
-    }, endpoint);
+    }, { url: endpoint, body });
 
-    // Parse the response
-    if (apiResult.status === false || apiResult.data?.orderDBList?.length === 0) {
+    // Parse the response — both endpoints use different field names
+    const orderList = apiResult.data?.orderDBList
+      || apiResult.data?.OrderDTODataList
+      || [];
+
+    if (apiResult.status === false || orderList.length === 0) {
       return output({
         ok: true,
         type,
@@ -782,25 +799,42 @@ async function cmdOrders(args, config) {
       });
     }
 
-    // Extract structured order info
-    const orders = (apiResult.data?.orderDBList || []).map(order => ({
-      sequenceNo: order.sequenceNo || '',
-      orderDate: order.orderDate || '',
-      trainCode: order.stationTrainDTO?.trainCode || '',
-      fromStation: order.stationTrainDTO?.fromStationName || '',
-      toStation: order.stationTrainDTO?.toStationName || '',
-      departure: order.stationTrainDTO?.startTime || '',
-      arrival: order.stationTrainDTO?.arriveTime || '',
-      travelDate: order.stationTrainDTO?.startDate || '',
-      status: order.ticketStatus || order.orderStatus || '',
-      tickets: (order.tickets || []).map(t => ({
-        passenger: t.passengerName || '',
-        seatType: t.seatTypeName || '',
-        seatDetail: t.seatDetail || '',
-        price: t.ticketPrice || '',
-        idType: t.idTypeName || ''
-      }))
-    }));
+    // Extract structured order info from order list
+    // upcoming uses queryMyOrder API (snake_case), unpaid uses queryMyOrderNoComplete (camelCase on stationTrainDTO)
+    const parseDate = d => (d || '').length === 8 ? `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}` : (d || '').substring(0, 10);
+    const parseTime = t => (t?.match(/\d{2}:\d{2}/) || [''])[0];
+
+    const orders = orderList.map(order => {
+      const seq = order.sequence_no || order.sequenceNo || '';
+      const od = order.order_date || order.orderDate || '';
+      const amt = order.ticket_price_all || order.ticketPriceAll || '';
+
+      return {
+        sequenceNo: seq,
+        orderDate: od,
+        amount: amt ? (amt / 100).toFixed(2) : '',
+        tickets: (order.tickets || []).map(t => {
+          const dto = t.stationTrainDTO || {};
+          const pax = t.passengerDTO || {};
+          return {
+            passenger: pax.passenger_name || t.passengerName || '',
+            idType: pax.passenger_id_type_name || t.idTypeName || '',
+            ticketNo: t.ticket_no || t.ticketNo || '',
+            trainCode: dto.station_train_code || dto.trainCode || '',
+            fromStation: dto.from_station_name || dto.fromStationName || '',
+            toStation: dto.to_station_name || dto.toStationName || '',
+            travelDate: parseDate(t.train_date || dto.start_date_str),
+            departure: parseTime(dto.start_time || dto.startTime),
+            arrival: parseTime(dto.arrive_time || dto.arriveTime),
+            seatType: t.seat_type_name || t.seatTypeName || '',
+            coach: t.coach_no || t.coach || '',
+            seatNo: t.seat_no || t.seatNo || '',
+            price: t.ticket_price ? (t.ticket_price / 100).toFixed(2) : (t.ticketPrice || ''),
+            status: t.ticket_status_name || t.ticketStatus || ''
+          };
+        })
+      };
+    });
 
     return output({
       ok: true,
@@ -1127,8 +1161,10 @@ async function cmdSessionStart(args, config) {
         return { ok: false, error: 'Login failed. Check credentials and SMS code.' };
       }
 
-      pool.disconnect(browser);
-      return { ok: true, message: 'Session started. Browser running in background.' };
+    // Navigate to home page so subsequent commands don't start on login page
+    await page.goto('https://www.12306.cn', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+    pool.disconnect(browser);
+    return { ok: true, message: 'Session started. Browser running in background.' };
     } catch (e) {
       pool.disconnect(browser);
       return { ok: false, error: e.message };
