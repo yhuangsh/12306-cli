@@ -966,7 +966,7 @@ program
     '    --train G35 --passenger 张三 --seat-type 二等座 --seat-pos F --yes\n\n' +
     'Maintenance window: booking unavailable 1:00–6:00 AM CST daily.'
   )
-  .version('1.3.0');
+  .version('1.3.1');
 
 // ── Station lookup ──
 
