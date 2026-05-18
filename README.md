@@ -10,7 +10,7 @@ China Railway 12306 CLI — search, book, and manage train tickets from the term
 - 🎫 **Book Tickets** — Place orders with seat type and position selection
 - 👥 **Multi-Passenger** — Book for multiple passengers in one order
 - 📋 **Order Management** — Check unpaid orders and cancel
-- 🔐 **SMS Login** — Two-phase SMS login designed for CLI/agent use
+- 🔐 **Persistent Session** — Browser stays alive between commands via CDP, no startup overhead
 
 ## Install
 
@@ -21,6 +21,8 @@ npm install -g yhuangsh/12306-cli
 This installs the `12306-cli` command and downloads a Chromium browser (via [Playwright](https://playwright.dev/)) used to automate the 12306 website.
 
 **Requirements:** Node.js ≥ 18
+
+The browser session runs Chromium as a background process. First launch takes a few seconds; subsequent commands reconnect instantly.
 
 ## First-Time Setup
 
@@ -44,51 +46,40 @@ Optionally set defaults for frequent routes:
 ## Quick Start
 
 ```bash
-# Search trains (no login required)
+# Start a persistent browser session
+12306-cli session start
+# → SMS sent to your phone
+12306-cli session start --sms-code 123456
+# → Session started. Browser running in background.
+
+# Search trains (no login needed)
 12306-cli search --from 北京 --to 上海 --date 2026-06-15
 
 # Book a ticket
 12306-cli book --from 北京 --to 上海 --date 2026-06-15 \
   --train G35 --passenger 张三 --seat-type 二等座 --seat-pos F --yes
 
-# Check unpaid orders
-12306-cli orders
-
-# Cancel unpaid order
-12306-cli cancel
+# Stop the session when done
+12306-cli session stop
 ```
 
 ## Commands
 
-### `12306-cli login`
+## SMS Login
 
-Login to 12306 via SMS verification. This is a two-phase flow:
-
-```bash
-# Phase 1: sends SMS code to your phone
-12306-cli login
-
-# Phase 2: submit the code (after receiving SMS)
-12306-cli login --sms-code 123456
-```
-
-Session is saved to `~/.config/12306-cli/`. Run once, then use `book`/`orders`/`cancel` freely.
-
-### `12306-cli status`
-
-Check if your current session is valid.
+Login is handled by `session start`:
 
 ```bash
-12306-cli status
+# Phase 1: send SMS
+12306-cli session start
+# → { needSmsCode: true, message: "SMS sent..." }
+
+# Phase 2: submit code
+12306-cli session start --sms-code 123456
+# → { ok: true, message: "Session started..." }
 ```
 
-### `12306-cli logout`
-
-Clear saved login session.
-
-```bash
-12306-cli logout
-```
+The browser stays alive in the background. All subsequent commands reconnect via CDP — zero startup overhead.
 
 ### `12306-cli cities`
 
@@ -101,6 +92,24 @@ Show supported city/station names. Use the Chinese name with `--from` and `--to`
 # Search by name, pinyin, or station code
 12306-cli cities --filter 北京
 12306-cli cities -f shanghai
+```
+
+### `12306-cli session`
+
+Manage the persistent browser session. The browser stays alive between commands — no startup overhead.
+
+```bash
+# Phase 1: launch browser + send SMS
+12306-cli session start
+
+# Phase 2: submit SMS code
+12306-cli session start --sms-code 123456
+
+# Check status
+12306-cli session status
+
+# Kill browser
+12306-cli session stop
 ```
 
 ### `12306-cli search`
@@ -177,19 +186,21 @@ Keys: `username`, `password`, `id_last4`, `passenger`, `from`, `to`, `seat_type`
 
 ## SMS Login
 
-Login is handled by the `login` command:
+Login is handled by `session start`:
 
 ```bash
 # Phase 1: send SMS
-12306-cli login
+12306-cli session start
 # → { needSmsCode: true, message: "SMS sent..." }
 
 # Phase 2: submit code
-12306-cli login --sms-code 123456
-# → { ok: true, message: "Login successful. Session saved." }
+12306-cli session start --sms-code 123456
+# → { ok: true, message: "Session started..." }
 ```
 
-Session persists across commands. When it expires, just re-run `12306-cli login`.
+The browser stays alive in the background. All subsequent commands reconnect via CDP — zero startup overhead.
+
+Run `12306-cli session stop` to end the session.
 
 ## How It Works
 
