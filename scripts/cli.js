@@ -55,12 +55,9 @@ function resolveProfile(args) {
     if (fs.existsSync(defaultLink)) {
       confPath = fs.realpathSync(defaultLink);
     } else {
-      // Fallback: try profiles/default.conf, then legacy .env
       confPath = path.join(profilesDir, 'default.conf');
       if (!fs.existsSync(confPath)) {
-        const legacy = path.join(configDir, '.env');
-        if (fs.existsSync(legacy)) return { name: 'default', conf: legacy, cookies: path.join(configDir, '.session-cookies.json') };
-        return { name: 'default', conf: null, cookies: path.join(configDir, '.session-cookies.json') };
+        return { name: 'default', conf: null, cookies: path.join(configDir, 'sessions', 'default.cookies.json') };
       }
     }
   } else {
