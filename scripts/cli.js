@@ -789,57 +789,67 @@ async function cmdOrders(args, config) {
     const sess = await session.load();
     if (sess.needLogin) return output({ ok: false, needLogin: true, message: 'Not logged in. Run: 12306-cli login' });
 
+    const type = args.type || 'unpaid';
     const { context } = session;
     const page = await context.newPage();
 
-    // Navigate to order page via the index
+    // Navigate to order page
     await page.goto('https://kyfw.12306.cn/otn/view/train_order.html', { waitUntil: 'networkidle' });
     await page.waitForTimeout(3000);
 
-    // Intercept the AJAX call that loads orders
-    let orderData = null;
-    page.on('response', async resp => {
-      if (resp.url().includes('queryMyOrderNoComplete') || resp.url().includes('queryOrder')) {
-        try { orderData = await resp.text(); } catch(e) {}
-      }
-    });
-
-    // Click the 火车票订单 link to trigger order loading
-    await page.evaluate(() => {
-      const links = document.querySelectorAll('a[data-href]');
-      for (const a of links) {
-        if (a.getAttribute('data-href')?.includes('train_order')) { a.click(); break; }
-      }
-    });
-    await page.waitForTimeout(5000);
-
-    // Parse order info from page body
-    const bodyText = await page.evaluate(() => document.body?.innerText || '');
-    const hasUnpaid = !bodyText.includes('没有未完成');
-
-    if (!hasUnpaid) {
-      return output({ ok: true, orders: [], message: 'No unpaid orders' });
+    // Directly call the appropriate API endpoint
+    let endpoint;
+    if (type === 'upcoming') {
+      endpoint = '/otn/queryOrder/queryMyOrder';
+    } else {
+      endpoint = '/otn/queryOrder/queryMyOrderNoComplete';
     }
 
-    // Extract order details from the rendered page
-    const orders = await page.evaluate(() => {
-      // Look for order entries in the content
-      const orderEls = document.querySelectorAll('.order-item, [class*=order-row], tbody tr');
-      const results = [];
-      for (const el of orderEls) {
-        const text = el.innerText?.trim();
-        if (text && text.length > 10) {
-          results.push(text.replace(/\s+/g, ' ').substring(0, 200));
-        }
-      }
-      return results;
-    });
+    const apiResult = await page.evaluate(async (url) => {
+      const r = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      });
+      const text = await r.text();
+      try { return JSON.parse(text); } catch { return { raw: text }; }
+    }, endpoint);
+
+    // Parse the response
+    if (apiResult.status === false || apiResult.data?.orderDBList?.length === 0) {
+      return output({
+        ok: true,
+        type,
+        orders: [],
+        message: type === 'upcoming' ? 'No upcoming (paid) orders' : 'No unpaid orders'
+      });
+    }
+
+    // Extract structured order info
+    const orders = (apiResult.data?.orderDBList || []).map(order => ({
+      sequenceNo: order.sequenceNo || '',
+      orderDate: order.orderDate || '',
+      trainCode: order.stationTrainDTO?.trainCode || '',
+      fromStation: order.stationTrainDTO?.fromStationName || '',
+      toStation: order.stationTrainDTO?.toStationName || '',
+      departure: order.stationTrainDTO?.startTime || '',
+      arrival: order.stationTrainDTO?.arriveTime || '',
+      travelDate: order.stationTrainDTO?.startDate || '',
+      status: order.ticketStatus || order.orderStatus || '',
+      tickets: (order.tickets || []).map(t => ({
+        passenger: t.passengerName || '',
+        seatType: t.seatTypeName || '',
+        seatDetail: t.seatDetail || '',
+        price: t.ticketPrice || '',
+        idType: t.idTypeName || ''
+      }))
+    }));
 
     return output({
       ok: true,
-      hasUnpaid: true,
-      orders,
-      rawBody: bodyText.substring(0, 2000)
+      type,
+      count: orders.length,
+      orders
     });
   } finally {
     await session.cleanup();
@@ -938,6 +948,7 @@ function buildArgsFromOpts(opts) {
   if (opts.profile) args.profile = opts.profile;
   if (opts.conf) args.conf = opts.conf;
   if (opts.smsCode) args.smsCode = opts.smsCode;  // login command only
+  if (opts.type) args.type = opts.type;
   if (opts.headless !== undefined) args.headless = opts.headless;
   if (opts.yes) args.yes = 'true';
   if (opts.auto) args.auto = 'true';
@@ -1215,13 +1226,20 @@ program
 
 program
   .command('orders')
-  .description('Check unpaid orders with seat details (requires login)')
+  .description('Check orders (default: unpaid). Requires login.\n\n' +
+    '  Types:\n' +
+    '    unpaid   — Unpaid / unfinished orders (default)\n' +
+    '    upcoming — Paid but not yet traveled')
+  .option('-t, --type <type>', 'Order type: unpaid (default) or upcoming', 'unpaid')
   .addOption(new (require('commander').Option)('--headless <bool>', 'Show browser').default('true').hideHelp())
   .addHelpText('after',
-    '\nExample:\n' +
-    '  $ 12306-cli orders\n\n' +
+    '\nExamples:\n' +
+    '  $ 12306-cli orders\n' +
+    '  $ 12306-cli orders --type upcoming\n' +
+    '  $ 12306-cli orders -t upcoming\n\n' +
     'Output JSON:\n' +
-    '  { ok: true, hasUnpaid: true/false, orders: [...], message }\n\n' +
+    '  { ok: true, type, count, orders: [{ trainCode, fromStation, toStation,\n' +
+    '    departure, arrival, travelDate, tickets: [{ passenger, seatType, seatDetail, price }] }] }\n\n' +
     '  When not logged in: { ok: false, needLogin: true }'
   )
   .action(async (opts) => {

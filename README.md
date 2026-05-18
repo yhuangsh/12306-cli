@@ -143,10 +143,14 @@ The `--yes` flag is required to confirm the order. Without it, the command retur
 
 ### `12306-cli orders`
 
-Check unpaid orders with seat details.
+Check orders. Requires login.
 
 ```bash
+# Unpaid orders (default)
 12306-cli orders
+
+# Paid but not yet traveled
+12306-cli orders --type upcoming
 ```
 
 ### `12306-cli cancel`
