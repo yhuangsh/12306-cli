@@ -1246,13 +1246,13 @@ async function cmdSessionKeep(minutes) {
   pool._saveInfo(info);
 
   const intervalMs = minutes * 60 * 1000;
-  console.error(`⏱  Keep-alive: pinging /queryMyOrder every ${minutes} min. Ctrl+C to stop.`);
+  console.error(`⏱  Keep-alive: pinging /queryMyOrder (history) every ${minutes} min. Ctrl+C to stop.`);
 
   // Prepare lightweight order query body
   const today = new Date();
   const d1 = new Date(today); d1.setDate(d1.getDate() - 1);
   const fmt = d => d.toISOString().split('T')[0];
-  const body = `pageIndex=0&pageSize=1&queryType=1&query_where=G&sequeue_train_name=&queryStartDate=${fmt(d1)}&queryEndDate=${fmt(today)}`;
+  const body = `pageIndex=0&pageSize=1&queryType=2&query_where=G&sequeue_train_name=&queryStartDate=${fmt(d1)}&queryEndDate=${fmt(today)}`;
 
   while (true) {
     await new Promise(r => setTimeout(r, intervalMs));
