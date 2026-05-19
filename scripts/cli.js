@@ -761,17 +761,17 @@ async function cmdOrders(args, config) {
 
     // Directly call the appropriate API endpoint
     let endpoint, body;
-    if (type === 'upcoming') {
-      // queryMyOrder returns OrderDTODataList
-      // 90-day window covers all upcoming paid orders
+    if (type === 'unpaid') {
+      endpoint = '/otn/queryOrder/queryMyOrderNoComplete';
+      body = '_json_att=';
+    } else {
+      // upcoming (queryType=1) or history (queryType=2)
+      const queryType = type === 'history' ? '2' : '1';
       const today = new Date();
       const start = new Date(today); start.setDate(start.getDate() - 90);
       const fmt = d => d.toISOString().split('T')[0];
       endpoint = '/otn/queryOrder/queryMyOrder';
-      body = `pageIndex=0&pageSize=100&queryType=1&query_where=G&sequeue_train_name=&queryStartDate=${fmt(start)}&queryEndDate=${fmt(today)}`;
-    } else {
-      endpoint = '/otn/queryOrder/queryMyOrderNoComplete';
-      body = '_json_att=';
+      body = `pageIndex=0&pageSize=100&queryType=${queryType}&query_where=G&sequeue_train_name=&queryStartDate=${fmt(start)}&queryEndDate=${fmt(today)}`;
     }
 
     const apiResult = await page.evaluate(async ({ url, body }) => {
@@ -792,10 +792,8 @@ async function cmdOrders(args, config) {
 
     if (apiResult.status === false || orderList.length === 0) {
       return output({
-        ok: true,
-        type,
-        orders: [],
-        message: type === 'upcoming' ? 'No upcoming (paid) orders' : 'No unpaid orders'
+        ok: true, type, count: 0, orders: [],
+        message: type === 'unpaid' ? 'No unpaid orders' : type === 'history' ? 'No history orders' : 'No upcoming (paid) orders'
       });
     }
 
@@ -1283,17 +1281,19 @@ program
   .description('Check orders (default: unpaid). Requires login.\n\n' +
     '  Types:\n' +
     '    unpaid   — Unpaid / unfinished orders (default)\n' +
-    '    upcoming — Paid but not yet traveled')
-  .option('-t, --type <type>', 'Order type: unpaid (default) or upcoming', 'unpaid')
+    '    upcoming — Paid but not yet traveled\n' +
+    '    history  — Completed / refunded orders')
+  .option('-t, --type <type>', 'Order type: unpaid (default), upcoming, or history', 'unpaid')
   .addOption(new (require('commander').Option)('--headless <bool>', 'Show browser').default('true').hideHelp())
   .addHelpText('after',
     '\nExamples:\n' +
     '  $ 12306-cli orders\n' +
     '  $ 12306-cli orders --type upcoming\n' +
-    '  $ 12306-cli orders -t upcoming\n\n' +
+    '  $ 12306-cli orders -t history\n\n' +
     'Output JSON:\n' +
-    '  { ok: true, type, count, orders: [{ trainCode, fromStation, toStation,\n' +
-    '    departure, arrival, travelDate, tickets: [{ passenger, seatType, seatDetail, price }] }] }\n\n' +
+    '  { ok: true, type, count, orders: [{ sequenceNo, orderDate, amount,\n' +
+    '    tickets: [{ passenger, trainCode, fromStation, toStation, travelDate,\n' +
+    '               departure, arrival, seatType, coach, seatNo, price, status }] }] }\n\n' +
     '  When not logged in: { ok: false, needLogin: true }'
   )
   .action(async (opts) => {
