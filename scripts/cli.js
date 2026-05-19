@@ -1236,7 +1236,7 @@ async function cmdSessionStatus() {
   return { ok: true, running, info };
 }
 
-async function cmdSessionKeep(minutes) {
+async function cmdSessionKeep(minutes = 10) {
   const { running } = await pool.status();
   if (!running) return { ok: false, error: 'No active session. Run: 12306-cli session start' };
 
@@ -1245,21 +1245,35 @@ async function cmdSessionKeep(minutes) {
   info.keepAlivePid = process.pid;
   pool._saveInfo(info);
 
-  const intervalMs = minutes * 60 * 1000;
-  console.error(`⏱  Keep-alive: pinging /queryMyOrder (history) every ${minutes} min. Ctrl+C to stop.`);
+  const startMin = minutes;
+  const startMs = startMin * 60 * 1000;
+  const capMs = 50 * 60 * 1000;
+
+  // Deadline: next 7am
+  const now = new Date();
+  const deadline = new Date(now);
+  deadline.setHours(7, 0, 0, 0);
+  if (deadline <= now) deadline.setDate(deadline.getDate() + 1);
+
+  let interval = startMs;
+  let streak = 0;
+
+  console.error(`⏱  Adaptive keep-alive: ${startMin}→20→40→50m cap. Until ${deadline.toLocaleTimeString()}. Ctrl+C to stop.`);
 
   // Prepare lightweight order query body
-  const today = new Date();
-  const d1 = new Date(today); d1.setDate(d1.getDate() - 1);
   const fmt = d => d.toISOString().split('T')[0];
-  const body = `pageIndex=0&pageSize=1&queryType=2&query_where=G&sequeue_train_name=&queryStartDate=${fmt(d1)}&queryEndDate=${fmt(today)}`;
 
-  while (true) {
-    await new Promise(r => setTimeout(r, intervalMs));
+  while (Date.now() < deadline.getTime()) {
+    await new Promise(r => setTimeout(r, interval));
+
+    // Update date range for each ping
+    const today = new Date();
+    const d1 = new Date(today); d1.setDate(d1.getDate() - 1);
+    const body = `pageIndex=0&pageSize=1&queryType=2&query_where=G&sequeue_train_name=&queryStartDate=${fmt(d1)}&queryEndDate=${fmt(today)}`;
+
     try {
       const { browser } = await pool.connect();
       const page = browser.contexts()[0].pages()[0];
-      // Navigate to establish origin (handles stale page)
       await page.goto('https://kyfw.12306.cn/otn/view/train_order.html',
         { waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
       if (!page.url().includes('login')) {
@@ -1272,11 +1286,21 @@ async function cmdSessionKeep(minutes) {
         }, { body });
       }
       pool.disconnect(browser);
-      console.error(`  ✓ ping ${new Date().toLocaleTimeString()}`);
+
+      streak++;
+      interval = Math.min(startMs * Math.pow(2, streak), capMs);
+      console.error(`  ✓ ${new Date().toLocaleTimeString()} — next in ${Math.round(interval / 60000)}m (streak ${streak})`);
     } catch (e) {
-      console.error(`  ✗ ping ${new Date().toLocaleTimeString()}: ${e.message}`);
+      streak = 0;
+      interval = startMs;
+      console.error(`  ✗ ${new Date().toLocaleTimeString()} — reset to ${startMin}m: ${e.message}`);
     }
   }
+
+  console.error(`⏱  Keep-alive ended at ${new Date().toLocaleTimeString()}.`);
+  // Clean up keep-alive PID from browser.json
+  const finalInfo = pool._readInfo();
+  if (finalInfo) { delete finalInfo.keepAlivePid; pool._saveInfo(finalInfo); }
 }
 
 program
@@ -1286,7 +1310,8 @@ program
     '  start    Launch browser and login via SMS\n' +
     '  stop     Kill the browser session\n' +
     '  status   Show session status\n' +
-    '  keep     Ping authenticated endpoint to prevent idle expiry\n\n' +
+    '  keep     Adaptive keep-alive: ping history endpoint to prevent idle expiry\n' +
+    '             Intervals auto-grow: 10→20→40→50m (cap). Until 7am or Ctrl+C.\n\n' +
     '  Browser stays alive between commands — no startup overhead.\n' +
     '  Commands (search/book/orders/cancel) reconnect via CDP.'
   )
@@ -1298,7 +1323,7 @@ program
     '  $ 12306-cli session start              # launch browser + send SMS\n' +
     '  $ 12306-cli session start --sms-code 123456  # submit code\n' +
     '  $ 12306-cli session status\n' +
-    '  $ 12306-cli session keep --interval 10   # ping every 10 min\n' +
+    '  $ 12306-cli session keep              # adaptive until 7am\n' +
     '  $ 12306-cli session stop\n\n' +
     'Output JSON (start - SMS sent):\n' +
     '  { ok: false, needSmsCode: true, message: "SMS sent..." }\n\n' +
@@ -1321,8 +1346,7 @@ program
     } else if (action === 'status') {
       output(await cmdSessionStatus());
     } else if (action === 'keep') {
-      const interval = parseInt(opts.interval) || 10;
-      cmdSessionKeep(interval).catch(e => console.error(e.message));
+      cmdSessionKeep(parseInt(opts.interval) || 10).catch(e => console.error(e.message));
     } else {
       output({ ok: false, error: `Unknown action: ${action}. Use: start, stop, status, keep` });
     }
