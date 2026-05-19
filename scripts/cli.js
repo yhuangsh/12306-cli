@@ -1221,6 +1221,11 @@ async function cmdSessionStart(args, config) {
 }
 
 async function cmdSessionStop() {
+  // Kill keep-alive process if running
+  const info = pool._readInfo();
+  if (info?.keepAlivePid) {
+    try { process.kill(info.keepAlivePid, 'SIGTERM'); } catch {}
+  }
   await pool.kill();
   console.error('✅ Session stopped.');
   return { ok: true, message: 'Session stopped.' };
@@ -1231,23 +1236,69 @@ async function cmdSessionStatus() {
   return { ok: true, running, info };
 }
 
+async function cmdSessionKeep(minutes) {
+  const { running } = await pool.status();
+  if (!running) return { ok: false, error: 'No active session. Run: 12306-cli session start' };
+
+  // Save keep-alive PID so session stop can kill it
+  const info = pool._readInfo();
+  info.keepAlivePid = process.pid;
+  pool._saveInfo(info);
+
+  const intervalMs = minutes * 60 * 1000;
+  console.error(`⏱  Keep-alive: pinging /queryMyOrder every ${minutes} min. Ctrl+C to stop.`);
+
+  // Prepare lightweight order query body
+  const today = new Date();
+  const d1 = new Date(today); d1.setDate(d1.getDate() - 1);
+  const fmt = d => d.toISOString().split('T')[0];
+  const body = `pageIndex=0&pageSize=1&queryType=1&query_where=G&sequeue_train_name=&queryStartDate=${fmt(d1)}&queryEndDate=${fmt(today)}`;
+
+  while (true) {
+    await new Promise(r => setTimeout(r, intervalMs));
+    try {
+      const { browser } = await pool.connect();
+      const page = browser.contexts()[0].pages()[0];
+      // Navigate to establish origin (handles stale page)
+      await page.goto('https://kyfw.12306.cn/otn/view/train_order.html',
+        { waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+      if (!page.url().includes('login')) {
+        await page.evaluate(async ({ body }) => {
+          await fetch('/otn/queryOrder/queryMyOrder', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+            body
+          });
+        }, { body });
+      }
+      pool.disconnect(browser);
+      console.error(`  ✓ ping ${new Date().toLocaleTimeString()}`);
+    } catch (e) {
+      console.error(`  ✗ ping ${new Date().toLocaleTimeString()}: ${e.message}`);
+    }
+  }
+}
+
 program
   .command('session <action>')
   .description(
     'Manage browser session (persistent Chromium via CDP)\n\n' +
     '  start    Launch browser and login via SMS\n' +
     '  stop     Kill the browser session\n' +
-    '  status   Show session status\n\n' +
+    '  status   Show session status\n' +
+    '  keep     Ping authenticated endpoint to prevent idle expiry\n\n' +
     '  Browser stays alive between commands — no startup overhead.\n' +
     '  Commands (search/book/orders/cancel) reconnect via CDP.'
   )
   .option('--sms-code <code>', 'SMS verification code (phase 2 of start)')
+  .option('--interval <min>', 'Keep-alive ping interval in minutes (default: 10)', '10')
   .addOption(new (require('commander').Option)('--headless <bool>', 'Show browser').default('true').hideHelp())
   .addHelpText('after',
     '\nExamples:\n' +
     '  $ 12306-cli session start              # launch browser + send SMS\n' +
     '  $ 12306-cli session start --sms-code 123456  # submit code\n' +
     '  $ 12306-cli session status\n' +
+    '  $ 12306-cli session keep --interval 10   # ping every 10 min\n' +
     '  $ 12306-cli session stop\n\n' +
     'Output JSON (start - SMS sent):\n' +
     '  { ok: false, needSmsCode: true, message: "SMS sent..." }\n\n' +
@@ -1269,8 +1320,11 @@ program
       output(await cmdSessionStop());
     } else if (action === 'status') {
       output(await cmdSessionStatus());
+    } else if (action === 'keep') {
+      const interval = parseInt(opts.interval) || 10;
+      cmdSessionKeep(interval).catch(e => console.error(e.message));
     } else {
-      output({ ok: false, error: `Unknown action: ${action}. Use: start, stop, status` });
+      output({ ok: false, error: `Unknown action: ${action}. Use: start, stop, status, keep` });
     }
   });
 
