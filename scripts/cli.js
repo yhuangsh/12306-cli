@@ -198,6 +198,7 @@ class BrowserPool {
     const context = contexts[0];
     const pages = context.pages();
     const page = pages.length > 0 ? pages[0] : await context.newPage();
+    await page.addInitScript(ANTI_DETECT_INIT).catch(() => {});
     return { browser, context, page };
   }
 
@@ -235,6 +236,7 @@ class BrowserPool {
       userAgent: USER_AGENT, viewport: { width: 1440, height: 900 },
     });
     if (context.pages().length === 0) await context.newPage();
+    await context.pages()[0].addInitScript(ANTI_DETECT_INIT).catch(() => {});
 
     this._saveInfo({ wsEndpoint, pid: proc.pid, startedAt: new Date().toISOString() });
     browser.close(); // disconnect, browser stays alive
@@ -282,13 +284,20 @@ async function getBrowser(headless = true) {
     const context = await browser.newContext({
       userAgent: USER_AGENT, viewport: { width: 1440, height: 900 }
     });
-    await context.addInitScript(() => { Object.defineProperty(navigator, 'webdriver', { get: () => false }); });
+    await context.addInitScript(ANTI_DETECT_INIT);
     const page = await context.newPage();
     return { browser, context, page, isSession: false };
   }
 }
 
-// ── Seat click via dispatchEvent ──
+const ANTI_DETECT_INIT = `
+  Object.defineProperty(navigator, 'webdriver', { get: () => false });
+  Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+  Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+  window.chrome = { runtime: {} };
+  const q = window.navigator.permissions.query;
+  window.navigator.permissions.query = (p) => p.name === 'notifications' ? Promise.resolve({ state: Notification.permission }) : q(p);
+`;
 
 async function clickSeat(page, seatId) {
   return page.evaluate((id) => {
@@ -1145,6 +1154,7 @@ async function cmdSessionStart(args, config) {
     const browser = await chromium.connectOverCDP(pool._readInfo().wsEndpoint);
     const context = browser.contexts()[0];
     const page = context.pages()[0];
+    await page.addInitScript(ANTI_DETECT_INIT).catch(() => {});
 
     try {
       await page.fill('#code', args.smsCode);
@@ -1194,6 +1204,7 @@ async function cmdSessionStart(args, config) {
   const browser = await chromium.connectOverCDP(wsEndpoint);
   const context = browser.contexts()[0];
   const page = context.pages()[0];
+  await page.addInitScript(ANTI_DETECT_INIT).catch(() => {});
 
   try {
     await page.goto('https://kyfw.12306.cn/otn/resources/login.html', { waitUntil: 'networkidle' });
