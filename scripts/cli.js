@@ -1490,4 +1490,51 @@ program
     }
   });
 
+// ─── Skill Install ─────────────────────────────────────
+
+program
+  .command('skill install')
+  .description('Install the AI agent skill for pi agent')
+  .option('--target <dir>', 'Skills directory', path.join(process.env.HOME || '/tmp', '.pi/agent/skills/12306-cli'))
+  .addHelpText('after',
+    '\nInstall the 12306-cli skill for AI agent (pi) use.\n' +
+    'Copies SKILL.md and references to ~/.pi/agent/skills/12306-cli/.\n\n' +
+    'Example:\n' +
+    '  $ 12306-cli skill install'
+  )
+  .action((opts) => {
+    const scriptDir = __dirname;
+    const srcDir = path.join(scriptDir, '..', '.pi', 'skills', '12306-cli');
+    const targetDir = opts.target || path.join(process.env.HOME, '.pi', 'agent', 'skills', '12306-cli');
+
+    if (!fs.existsSync(srcDir)) {
+      console.error('Skill source not found at', srcDir);
+      output({ ok: false, error: 'Skill source not found. Are you running from the 12306-cli project directory?' });
+      return;
+    }
+
+    // Copy recursively
+    function copyDir(src, dest) {
+      if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
+      for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+        const s = path.join(src, entry.name);
+        const d = path.join(dest, entry.name);
+        if (entry.isDirectory()) {
+          copyDir(s, d);
+        } else {
+          fs.copyFileSync(s, d);
+          console.error(`  → ${path.relative(targetDir, d)}`);
+        }
+      }
+    }
+
+    try {
+      copyDir(srcDir, targetDir);
+      console.error(`✅ Skill installed to ${targetDir}`);
+      output({ ok: true, installedTo: targetDir });
+    } catch (e) {
+      output({ ok: false, error: e.message });
+    }
+  });
+
 program.parse();
