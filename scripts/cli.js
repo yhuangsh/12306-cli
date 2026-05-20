@@ -514,6 +514,7 @@ async function cmdBook(args, config) {
 
     // Submit order
     await page.evaluate((oc) => eval(oc), selected.onclick);
+    await page.waitForTimeout(8000);
 
     if (!page.url().includes('confirmPassenger/initDc')) {
       return output({ ok: false, error: 'Failed to reach passenger page. Unpaid order may exist.' });
