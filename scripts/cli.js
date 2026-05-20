@@ -1229,7 +1229,16 @@ async function cmdSessionStart(args, config) {
     await page.waitForTimeout(500);
 
     await page.click('#verification_code');
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(2000);
+
+    // Check for SMS rate limit message
+    const bodyText = await page.evaluate(() => document.body?.innerText || '');
+    if (bodyText.includes('次数过多') || bodyText.includes('不再受理')) {
+      pool.disconnect(browser);
+      return { ok: false, error: 'SMS rate limited. Too many codes today. Try again tomorrow.' };
+    }
+
+    await page.waitForTimeout(1000);
     pool.disconnect(browser);
     return { ok: false, needSmsCode: true, message: 'SMS sent. Re-run: 12306-cli session start --sms-code <code>' };
   } catch (e) {
