@@ -1199,6 +1199,24 @@ async function cmdSessionStart(args, config) {
     await page.goto('https://kyfw.12306.cn/otn/resources/login.html', { waitUntil: 'networkidle' });
     await page.waitForTimeout(2000);
 
+    // Check if already logged in (e.g. from a previous visible browser session)
+    const alreadyLoggedIn = await page.evaluate(() => {
+      return !document.querySelector('#J-userName') ||
+        document.body.innerText.includes('您好，') ||
+        document.body.innerText.includes('退出');
+    });
+    if (alreadyLoggedIn) {
+      // Verify via API
+      const isLogin = await page.evaluate(async () => {
+        const r = await fetch('/otn/login/conf', { method: 'POST', credentials: 'include' });
+        return (await r.json()).data?.is_login;
+      });
+      if (isLogin === 'Y') {
+        pool.disconnect(browser);
+        return { ok: true, message: 'Already logged in. Session reused.' };
+      }
+    }
+
     await page.fill('#J-userName', vars.TRAIN_USERNAME);
     await page.fill('#J-password', vars.TRAIN_PASSWORD);
     await page.click('#J-login');
