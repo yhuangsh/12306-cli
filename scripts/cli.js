@@ -461,7 +461,7 @@ async function cmdBook(args, config) {
 
   let browser, context, page;
   try {
-    ({ browser, context } = await pool.connect()); page = await context.newPage();
+    ({ browser, context, page } = await pool.connect());
   } catch (e) {
     return output({ ok: false, needLogin: true, message: e.message });
   }
@@ -744,7 +744,7 @@ async function cmdBook(args, config) {
 async function cmdOrders(args, config) {
   let browser, context, page;
   try {
-    ({ browser, context } = await pool.connect()); page = await context.newPage();
+    ({ browser, context, page } = await pool.connect());
   } catch (e) {
     return output({ ok: false, needLogin: true, message: e.message });
   }
@@ -852,7 +852,7 @@ async function cmdOrders(args, config) {
 async function cmdCancel(args, config) {
   let browser, context, page;
   try {
-    ({ browser, context } = await pool.connect()); page = await context.newPage();
+    ({ browser, context, page } = await pool.connect());
   } catch (e) {
     return output({ ok: false, needLogin: true, message: e.message });
   }
@@ -1161,10 +1161,8 @@ async function cmdSessionStart(args, config) {
         return { ok: false, error: 'Login failed. Check credentials and SMS code.' };
       }
 
-    // Navigate to home page so subsequent commands don't start on login page
-    await page.goto('https://www.12306.cn', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
-    pool.disconnect(browser);
-    return { ok: true, message: 'Session started. Browser running in background.' };
+      pool.disconnect(browser);
+      return { ok: true, message: 'Session started. Browser running in background.' };
     } catch (e) {
       pool.disconnect(browser);
       return { ok: false, error: e.message };
