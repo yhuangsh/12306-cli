@@ -469,6 +469,9 @@ async function cmdBook(args, config) {
   try {
     // Search
 
+    // Auto-dismiss any popups (12306 shows notices before booking)
+    page.on('dialog', async d => { console.error('  ⚡ dismissed popup:', d.message().substring(0, 80)); await d.accept(); });
+
     await page.goto(
       `https://kyfw.12306.cn/otn/leftTicket/init?linktypeid=dc&fs=${encodeURIComponent(from)}&ts=${encodeURIComponent(to)}&date=${date}&flag=N,N,Y`,
       { waitUntil: 'domcontentloaded', timeout: 15000 }
