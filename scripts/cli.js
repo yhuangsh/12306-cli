@@ -1494,18 +1494,32 @@ program
 
 program
   .command('skill install')
-  .description('Install the AI agent skill for pi agent')
-  .option('--target <dir>', 'Skills directory', path.join(process.env.HOME || '/tmp', '.pi/agent/skills/12306-cli'))
+  .description('Install the AI agent skill (pi or openclaw)')
+  .option('-a, --agent <name>', 'Agent to install for: pi (default) or openclaw', 'pi')
+  .option('--target <dir>', 'Custom target directory (overrides --agent)')
   .addHelpText('after',
-    '\nInstall the 12306-cli skill for AI agent (pi) use.\n' +
-    'Copies SKILL.md and references to ~/.pi/agent/skills/12306-cli/.\n\n' +
-    'Example:\n' +
-    '  $ 12306-cli skill install'
+    '\nInstall the 12306-cli skill for AI agent use.\n' +
+    'Copies SKILL.md and references to the agent skills directory.\n\n' +
+    'Pi:        ~/.pi/agent/skills/12306-cli/\n' +
+    'OpenClaw:  ~/.openclaw/workspace/skills/12306-cli/\n\n' +
+    'Examples:\n' +
+    '  $ 12306-cli skill install              # pi (default)\n' +
+    '  $ 12306-cli skill install -a openclaw  # openclaw\n' +
+    '  $ 12306-cli skill install --target /custom/path'
   )
-  .action((opts) => {
+  .action((install, opts) => {
     const scriptDir = __dirname;
     const srcDir = path.join(scriptDir, '..', '.pi', 'skills', '12306-cli');
-    const targetDir = opts.target || path.join(process.env.HOME, '.pi', 'agent', 'skills', '12306-cli');
+    
+    // Resolve target directory
+    let targetDir;
+    if (opts.target) {
+      targetDir = opts.target;
+    } else if (opts.agent === 'openclaw') {
+      targetDir = path.join(process.env.HOME, '.openclaw', 'workspace', 'skills', '12306-cli');
+    } else {
+      targetDir = path.join(process.env.HOME, '.pi', 'agent', 'skills', '12306-cli');
+    }
 
     if (!fs.existsSync(srcDir)) {
       console.error('Skill source not found at', srcDir);

@@ -1,6 +1,7 @@
 ---
 name: 12306-cli
 description: Search and book train tickets on China's 12306 railway system. Use when the user wants to search trains, book tickets, check orders, or cancel orders. Supports seat type and position selection (window/aisle), multi-passenger booking, and order management.
+icon: 🚄
 allowed-tools: Bash(12306-cli:*)
 ---
 
