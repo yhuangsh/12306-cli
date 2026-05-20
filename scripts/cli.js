@@ -474,7 +474,7 @@ async function cmdBook(args, config) {
 
     await page.goto(
       `https://kyfw.12306.cn/otn/leftTicket/init?linktypeid=dc&fs=${encodeURIComponent(from)}&ts=${encodeURIComponent(to)}&date=${date}&flag=N,N,Y`,
-      { waitUntil: 'domcontentloaded', timeout: 15000 }
+      { waitUntil: 'networkidle', timeout: 30000 }
     );
     await page.waitForTimeout(3000);
 
@@ -512,31 +512,8 @@ async function cmdBook(args, config) {
       selected = trains[idx];
     }
 
-    // Submit order — use dispatchEvent (12306 blocks regular clicks)
-    const clicked = await page.evaluate((code) => {
-      const rows = document.querySelectorAll('tr[id^="ticket_"]');
-      for (const row of rows) {
-        const cell = row.querySelector('.number, .train a');
-        if (cell?.textContent?.trim() === code) {
-          const btn = row.querySelector('a.btn72, td.no-br a');
-          if (btn) {
-            const rect = btn.getBoundingClientRect();
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            btn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: x, clientY: y }));
-            btn.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: x, clientY: y }));
-            btn.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x, clientY: y }));
-            btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: x, clientY: y, button: 0 }));
-            btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: x, clientY: y, button: 0 }));
-            btn.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: x, clientY: y, button: 0 }));
-            return true;
-          }
-        }
-      }
-      return false;
-    }, selected.code);
-
-    if (!clicked) return output({ ok: false, error: `Could not find booking button for ${selected.code}` });
+    // Submit order
+    await page.evaluate((oc) => eval(oc), selected.onclick);
 
     if (!page.url().includes('confirmPassenger/initDc')) {
       return output({ ok: false, error: 'Failed to reach passenger page. Unpaid order may exist.' });
