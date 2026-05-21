@@ -12,6 +12,23 @@ China Railway 12306 CLI — search, book, and manage train tickets from the term
 - 📋 **Order Management** — Check unpaid orders and cancel
 - 🔐 **Persistent Session** — Browser stays alive between commands via CDP, no startup overhead
 
+## CLI vs AI Agent Skill
+
+`12306-cli` is a **single tool** you can use in two ways:
+
+| Mode | How | Best for |
+|------|-----|----------|
+| **Direct CLI** | Type commands in terminal | Quick searches, scripts, cron jobs |
+| **AI Agent Skill** | Ask agent in natural language | "Book me a G train from 北京 to 上海 next Friday, F seat" |
+
+The AI agent skill is just documentation teaching agents how to run `12306-cli` — there's no separate tool or service. Install both in one step:
+
+```bash
+npm install -g yhuangsh/12306-cli
+12306-cli skill install          # installs SKILL.md for pi agent
+12306-cli skill install -a openclaw  # or for openclaw
+```
+
 ## Install
 
 ```bash
