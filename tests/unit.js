@@ -15,6 +15,12 @@ const SCRIPT = path.join(__dirname, '..', 'scripts', 'cli.js');
 
 let passed = 0, failed = 0, skipped = 0;
 
+// Dynamic future date (next Sunday) to avoid stale date issues
+const d = new Date();
+d.setDate(d.getDate() + (7 - d.getDay()) % 7);
+const TEST_DATE = d.toISOString().split('T')[0];
+console.error('Test date:', TEST_DATE);
+
 function test(name, fn) {
   try {
     const result = fn();
@@ -99,7 +105,7 @@ console.log('\n📋 Phase 12: XHR-based Search');
 // Run ONE search and reuse the result for all assertions
 let searchResult = null;
 test('search returns structured results with seat availability', () => {
-  const out = runStdout(`node ${SCRIPT} search --from 北京 --to 上海 --date 2026-05-20`);
+  const out = runStdout(`node ${SCRIPT} search --from 北京 --to 上海 --date ${TEST_DATE}`);
   searchResult = parseJSON(out);
   if (!searchResult.ok) throw new Error(`Search failed: ${searchResult.error}`);
   if (!searchResult.trains || searchResult.trains.length === 0) throw new Error('No trains returned');
@@ -150,7 +156,7 @@ test('seat values are valid (有/无/number)', () => {
 // Test --train-filter with a separate search
 test('search --train-filter G returns only G-prefixed trains', () => {
   // May return 0 trains if rate-limited from previous search — skip gracefully
-  const { stdout } = runCombined(`node ${SCRIPT} search --from 北京 --to 上海 --date 2026-05-20 --train-filter G`);
+  const { stdout } = runCombined(`node ${SCRIPT} search --from 北京 --to 上海 --date ${TEST_DATE} --train-filter G`);
   const lines = stdout.trim().split('\n');
   const jsonLine = lines.filter(l => l.startsWith('{')).pop();
   if (!jsonLine) throw new Error('No JSON output');
@@ -171,7 +177,7 @@ test('search --train-filter G returns only G-prefixed trains', () => {
 console.log('\n📋 Phase 11: Multi-Passenger (dry-run)');
 
 test('book without --yes/--auto returns error (session or confirmation)', () => {
-  const out = runStdout(`node ${SCRIPT} book --from 北京 --to 上海 --date 2026-05-20 --train G1 --passenger "张三" --seat-type 二等座 --seat-pos F`);
+  const out = runStdout(`node ${SCRIPT} book --from 北京 --to 上海 --date ${TEST_DATE} --train G1 --passenger "张三" --seat-type 二等座 --seat-pos F`);
   const json = parseJSON(out);
   if (json.ok === true) throw new Error('Expected order to be blocked without --yes');
   // Could be session error or missing --yes — both are correct blocking behavior
