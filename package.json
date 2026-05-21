@@ -1,6 +1,6 @@
 {
   "name": "12306-cli",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "12306 China Railway CLI — search, book, and manage train tickets from the terminal",
   "bin": {
     "12306-cli": "./scripts/cli.js"
