@@ -22,7 +22,7 @@
 const { execSync } = require('child_process');
 const path = require('path');
 
-const CLI = `node ${path.join(__dirname, 'cli.js')}`;
+const CLI = `node ${path.join(__dirname, '..', 'scripts', 'cli.js')}`;
 let PASS = 0, FAIL = 0, SKIP = 0;
 
 // Parse args

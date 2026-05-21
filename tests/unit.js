@@ -11,7 +11,7 @@
 
 const { execSync, execFileSync } = require('child_process');
 const path = require('path');
-const SCRIPT = path.join(__dirname, 'cli.js');
+const SCRIPT = path.join(__dirname, '..', 'scripts', 'cli.js');
 
 let passed = 0, failed = 0, skipped = 0;
 
