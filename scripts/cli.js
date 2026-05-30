@@ -10,6 +10,9 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
+const qrcode = require('qrcode-terminal');
+const jsqr = require('jsqr');
+const PNG = require('png-js');
 
 // Use Playwright's bundled Chromium (auto-installed by postinstall).
 // Override with CHROME_PATH env var if you need a custom browser.
@@ -942,6 +945,7 @@ function buildArgsFromOpts(opts) {
   if (opts.smsCode) args.smsCode = opts.smsCode;  // login command only
   if (opts.type) args.type = opts.type;
   if (opts.headless !== undefined) args.headless = opts.headless;
+  if (opts.qr) args.qr = 'true';
   if (opts.yes) args.yes = 'true';
   if (opts.auto) args.auto = 'true';
   return args;
@@ -1247,6 +1251,170 @@ async function cmdSessionStart(args, config) {
   }
 }
 
+// ── QR Code Login ──
+// Uses 12306's /passport/web/create-qr64 + /passport/web/checkqr API.
+// No credentials needed — user scans QR with 12306 APP.
+
+async function cmdSessionStartQR(args, config) {
+  const { running } = await pool.status();
+  if (running) {
+    return { ok: false, error: 'Session already active. Run `12306-cli session stop` first.' };
+  }
+
+  // Launch headless browser (needed for cookies: RAIL_DEVICEID, etc.)
+  const headless = args.headless !== 'false';
+  let wsEndpoint;
+  try {
+    ({ wsEndpoint } = await pool.launch(headless));
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+  console.error('🚄 Browser launched.');
+
+  const browser = await chromium.connectOverCDP(wsEndpoint);
+  const context = browser.contexts()[0];
+  const page = context.pages()[0];
+
+  try {
+    // 1. Navigate to login page to establish cookies (RAIL_DEVICEID, RAIL_EXPIRATION)
+    await page.goto('https://kyfw.12306.cn/otn/resources/login.html', { waitUntil: 'networkidle' });
+    await page.waitForTimeout(2000);
+
+    // Check if already logged in
+    const alreadyLoggedIn = await page.evaluate(() => {
+      return document.body.innerText.includes('您好，') || document.body.innerText.includes('退出');
+    });
+    if (alreadyLoggedIn) {
+      const isLogin = await page.evaluate(async () => {
+        const r = await fetch('/otn/login/conf', { method: 'POST', credentials: 'include' });
+        return (await r.json()).data?.is_login;
+      });
+      if (isLogin === 'Y') {
+        pool.disconnect(browser);
+        return { ok: true, message: 'Already logged in. Session reused.' };
+      }
+    }
+
+    // 2. Call create-qr64 API to generate QR code
+    const qrData = await page.evaluate(async () => {
+      const res = await fetch('https://kyfw.12306.cn/passport/web/create-qr64', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'appid=otn',
+        credentials: 'include'
+      });
+      return await res.json();
+    });
+
+    if (!qrData || qrData.result_code !== '0' || !qrData.image || !qrData.uuid) {
+      pool.disconnect(browser);
+      return { ok: false, error: 'Failed to generate QR code.' };
+    }
+
+    // 3. Save QR image to file (for AI agents to send as attachment)
+    const os = require('os');
+    const qrImageFile = path.join(os.tmpdir(), `12306-qr-${Date.now()}.png`);
+    fs.writeFileSync(qrImageFile, Buffer.from(qrData.image, 'base64'));
+
+    // 4. Emit QR info to stdout immediately so AI agents can act on it
+    //    (the command keeps polling below; this is not the final output)
+    console.log(JSON.stringify({ ok: false, needQrScan: true, qrImage: qrImageFile, message: 'Scan QR code with 12306 APP (我的 → 扫一扫).' }));
+
+    // 5. Also render QR in terminal for human CLI users
+    try {
+      const qrContent = await new Promise((resolve, reject) => {
+        const imgBuf = Buffer.from(qrData.image, 'base64');
+        const png = new PNG(imgBuf);
+        png.decode((pixels) => {
+          const code = jsqr(pixels, png.width, png.height);
+          if (code) resolve(code.data);
+          else reject(new Error('Failed to decode QR code image'));
+        });
+      });
+
+      console.error('');
+      console.error('📱 Scan this QR code with 12306 APP (我的 → 扫一扫):');
+      console.error('');
+      qrcode.generate(qrContent, { small: true }, (qr) => {
+        console.error(qr);
+      });
+      console.error('');
+    } catch {
+      // Terminal QR rendering failed (e.g. jsqr decode issue) — image file still available
+      console.error('');
+      console.error(`📱 QR image saved to: ${qrImageFile}`);
+      console.error('   Send this image to your phone and scan with 12306 APP.');
+      console.error('');
+    }
+
+    // 6. Poll checkqr until scanned + confirmed or expired
+    const uuid = qrData.uuid;
+    const TIMEOUT = 120_000; // 2 minutes
+    const startTime = Date.now();
+    let lastStatus = 'waiting';
+
+    while (Date.now() - startTime < TIMEOUT) {
+      await page.waitForTimeout(1500);
+
+      const checkResult = await page.evaluate(async (qrUuid) => {
+        const res = await fetch('https://kyfw.12306.cn/passport/web/checkqr', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: `uuid=${encodeURIComponent(qrUuid)}&appid=otn`,
+          credentials: 'include'
+        });
+        return await res.json();
+      }, uuid);
+
+      const code = String(checkResult.result_code);
+
+      if (code === '1' && lastStatus !== 'scanned') {
+        lastStatus = 'scanned';
+        console.error('📱 QR scanned! Waiting for confirmation on phone...');
+      } else if (code === '2') {
+        // Login confirmed — finalize session via userLogin callback
+        await page.evaluate(async () => {
+          await fetch('/otn/login/userLogin', { method: 'POST', credentials: 'include' });
+        });
+        await page.waitForTimeout(2000);
+
+        // Verify login
+        const isLogin = await page.evaluate(async () => {
+          const r = await fetch('/otn/login/conf', { method: 'POST', credentials: 'include' });
+          return (await r.json()).data?.is_login;
+        });
+
+        pool.disconnect(browser);
+        try { fs.unlinkSync(qrImageFile); } catch {}
+
+        if (isLogin === 'Y') {
+          return { ok: true, message: 'QR login successful. Browser running in background.' };
+        } else {
+          return { ok: false, error: 'QR login confirmed but session not established. Try again.' };
+        }
+      } else if (code === '3') {
+        pool.disconnect(browser);
+        try { fs.unlinkSync(qrImageFile); } catch {}
+        return { ok: false, error: 'QR code expired. Run `12306-cli session start --qr` again.' };
+      } else if (code === '5') {
+        pool.disconnect(browser);
+        try { fs.unlinkSync(qrImageFile); } catch {}
+        return { ok: false, error: '12306 system error. Try again later.' };
+      }
+      // code === '0' → still waiting, continue polling
+    }
+
+    // Timed out
+    pool.disconnect(browser);
+    try { fs.unlinkSync(qrImageFile); } catch {}
+    return { ok: false, error: 'QR login timed out (2 min). Run `12306-cli session start --qr` again.' };
+
+  } catch (e) {
+    pool.disconnect(browser);
+    return { ok: false, error: e.message };
+  }
+}
+
 async function cmdSessionStop() {
   await pool.kill();
   console.error('✅ Session stopped.');
@@ -1262,20 +1430,27 @@ program
   .command('session <action>')
   .description(
     'Manage browser session (persistent Chromium via CDP)\n\n' +
-    '  start    Launch browser and login via SMS\n' +
+    '  start    Launch browser and login (SMS or QR)\n' +
     '  stop     Kill the browser session\n' +
     '  status   Show session status\n\n' +
+    '  Login methods:\n' +
+    '    --qr       QR code scan (no credentials needed)\n' +
+    '    (default)  SMS verification (needs username/password/id_last4)\n\n' +
     '  Browser stays alive between commands — no startup overhead.\n' +
     '  Commands (search/book/orders/cancel) reconnect via CDP.'
   )
-  .option('--sms-code <code>', 'SMS verification code (phase 2 of start)')
+  .option('--qr', 'Login via QR code scan (12306 APP). No credentials needed.')
+  .option('--sms-code <code>', 'SMS verification code (phase 2 of SMS login)')
   .addOption(new (require('commander').Option)('--headless <bool>', 'Show browser').default('true').hideHelp())
   .addHelpText('after',
     '\nExamples:\n' +
-    '  $ 12306-cli session start              # launch browser + send SMS\n' +
-    '  $ 12306-cli session start --sms-code 123456  # submit code\n' +
+    '  $ 12306-cli session start --qr         # QR code login (scan with app)\n' +
+    '  $ 12306-cli session start              # SMS login (send SMS)\n' +
+    '  $ 12306-cli session start --sms-code 123456  # submit SMS code\n' +
     '  $ 12306-cli session status\n' +
     '  $ 12306-cli session stop\n\n' +
+    'Output JSON (start --qr - success):\n' +
+    '  { ok: true, message: "QR login successful..." }\n\n' +
     'Output JSON (start - SMS sent):\n' +
     '  { ok: false, needSmsCode: true, message: "SMS sent..." }\n\n' +
     'Output JSON (start - success):\n' +
@@ -1287,7 +1462,12 @@ program
     const args = buildArgsFromOpts(opts);
     const config = loadConfig(args);
     if (action === 'start') {
-      const result = await cmdSessionStart(args, config);
+      let result;
+      if (args.qr === 'true' || args.qr === '1') {
+        result = await cmdSessionStartQR(args, config);
+      } else {
+        result = await cmdSessionStart(args, config);
+      }
       if (result.ok) console.error('✅ ' + result.message);
       else if (result.needSmsCode) console.error('📱 ' + result.message);
       else console.error('❌ ' + (result.error || 'Failed'));
