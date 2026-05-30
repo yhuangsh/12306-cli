@@ -970,7 +970,7 @@ program
     '    --train G35 --passenger 张三 --seat-type 二等座 --seat-pos F --yes\n\n' +
     'Maintenance window: booking unavailable 1:00–6:00 AM CST daily.'
   )
-  .version('1.4.1');
+  .version('1.5.0');
 
 // ── Station lookup ──
 
@@ -1372,10 +1372,9 @@ async function cmdSessionStartQR(args, config) {
         lastStatus = 'scanned';
         console.error('📱 QR scanned! Waiting for confirmation on phone...');
       } else if (code === '2') {
-        // Login confirmed — finalize session via userLogin callback
-        await page.evaluate(async () => {
-          await fetch('/otn/login/userLogin', { method: 'POST', credentials: 'include' });
-        });
+        // Login confirmed — finalize session via page navigation to userLogin
+        // This triggers the full redirect chain: userLogin → passport → uamtk token exchange → session
+        await page.goto('https://kyfw.12306.cn/otn/login/userLogin', { waitUntil: 'networkidle' });
         await page.waitForTimeout(2000);
 
         // Verify login
